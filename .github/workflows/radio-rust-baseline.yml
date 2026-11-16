@@ -15,6 +15,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  desktop-baseline:
+    name: Check inherited desktop client
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install desktop native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: radio-rust-desktop
+      - name: Check desktop client (inherited 26.3 baseline)
+        run: cargo check --locked -p horizon-client
+
   protocol-baseline:
     name: Check inherited Rust protocol crate
     runs-on: ubuntu-latest
