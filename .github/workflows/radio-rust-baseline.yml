@@ -1,0 +1,29 @@
+name: Radio Client Rust baseline
+
+on:
+  push:
+    branches: [radio-client-rust]
+  pull_request:
+    branches: [radio-client-rust]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: radio-rust-baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol-baseline:
+    name: Check inherited Rust protocol crate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: radio-rust-protocol
+      - name: Check protocol crate (inherited 26.3 baseline, not a 1.21.11 verification)
+        run: cargo check --locked -p horizon-protocol
