@@ -19,6 +19,7 @@ pub mod mod_net;
 pub mod packets;
 pub mod quiet;
 pub mod radio_target;
+pub mod radio_12111;
 pub mod registry;
 mod resolver;
 pub use resolver::{server_redirect, set_name_servers};
