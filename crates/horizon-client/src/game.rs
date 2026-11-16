@@ -7901,6 +7901,9 @@ impl Game<'_> {
             && self.control.is_none()
             && self.screen == Screen::Playing
             && self.player.is_some()
+            // A remote server must keep receiving client ticks/keepalives when
+            // this window loses focus. Only auto-pause an integrated world.
+            && self.remote.is_none()
             && !self.options.no_pause
             && self.settings.file.bool("pauseOnLostFocus")
             && self.book.is_none()
