@@ -44,3 +44,5 @@ jobs:
           key: radio-rust-protocol
       - name: Check protocol crate (inherited 26.3 baseline, not a 1.21.11 verification)
         run: cargo check --locked -p horizon-protocol
+      - name: Test Radio target-version metadata
+        run: cargo test --locked -p horizon-protocol radio_target::tests
