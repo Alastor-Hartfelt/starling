@@ -65,6 +65,36 @@ mod tests {
     }
 
     #[test]
+    fn handshake_supports_status_intent_without_changing_protocol() {
+        let packet = handshake_packet("example.org", 25565, handshake::STATUS);
+        let bytes = packet.encode();
+        assert_eq!(bytes[0], 0);
+        assert_eq!(&bytes[1..3], &[0x86, 0x06]);
+        crate::packets::round_trip(
+            packet,
+            handshake::Serverbound::encode,
+            handshake::Serverbound::decode,
+        );
+    }
+
+    #[test]
+    fn login_success_rejects_truncated_profiles() {
+        let profile = login::GameProfile {
+            uuid: 42,
+            name: "RadioTest".into(),
+            properties: vec![],
+        };
+        let mut writer = Writer::new();
+        <login::GameProfile as Codec<login::GameProfile>>::write(&profile, &mut writer);
+        for length in 0..writer.data.len() {
+            assert!(
+                decode_login_finished(&writer.data[..length]).is_err(),
+                "truncated login profile unexpectedly decoded at {length} bytes"
+            );
+        }
+    }
+
+    #[test]
     fn login_success_has_no_session_uuid() {
         let profile = login::GameProfile {
             uuid: 42,
