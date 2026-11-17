@@ -1,6 +1,7 @@
 //! Speaking to servers of an older release: the first layer of the native protocol adapter (roadmap
 //! `older-servers`). Horizon's packets are 26.3's; a server on another protocol numbers them differently.
 //! This maps packet ids per connection state, both ways. It does not translate packet contents.
+mod v1_21_11;
 pub mod v26_2;
 
 use crate::{
@@ -15,16 +16,18 @@ pub enum ServerVersion {
     #[default]
     Current,
     V26_2,
+    V1_21_11,
 }
 
 impl ServerVersion {
-    pub const ALL: [Self; 2] = [Self::Current, Self::V26_2];
+    pub const ALL: [Self; 3] = [Self::Current, Self::V26_2, Self::V1_21_11];
 
     /// The protocol number its handshake states.
     pub fn protocol(self) -> i32 {
         match self {
             Self::Current => crate::PROTOCOL_VERSION,
             Self::V26_2 => v26_2::PROTOCOL,
+            Self::V1_21_11 => crate::radio_target::TARGET_PROTOCOL_VERSION,
         }
     }
 
@@ -33,6 +36,7 @@ impl ServerVersion {
         match self {
             Self::Current => crate::GAME_VERSION,
             Self::V26_2 => v26_2::NAME,
+            Self::V1_21_11 => crate::radio_target::TARGET_GAME_VERSION,
         }
     }
 
@@ -58,6 +62,8 @@ impl ServerVersion {
             (Self::Current, _) => return Some(id),
             (Self::V26_2, Direction::Clientbound) => v26_2::clientbound(state),
             (Self::V26_2, Direction::Serverbound) => v26_2::serverbound(state),
+            (Self::V1_21_11, Direction::Clientbound) => v1_21_11::clientbound(state),
+            (Self::V1_21_11, Direction::Serverbound) => v1_21_11::serverbound(state),
         };
         let mapped = *table.get(usize::try_from(id).ok()?)?;
         mapped.map(i32::from)
@@ -101,6 +107,32 @@ mod tests {
             Some(ServerVersion::Current)
         );
         assert_eq!(ServerVersion::from_protocol(775), None);
+    }
+
+    #[test]
+    fn radio_packet_ids_match_the_1_21_11_report() {
+        let version = ServerVersion::from_protocol(774).unwrap();
+        assert_eq!(version.name(), "1.21.11");
+        assert_eq!(
+            version.clientbound_id(State::Play, 43),
+            Some(ids::play::clientbound::KEEP_ALIVE)
+        );
+        assert_eq!(
+            version.clientbound_id(State::Play, 70),
+            Some(ids::play::clientbound::PLAYER_POSITION)
+        );
+        assert_eq!(
+            version.serverbound_id(State::Play, ids::play::serverbound::KEEP_ALIVE),
+            Some(27)
+        );
+        assert_eq!(
+            version.serverbound_id(State::Play, ids::play::serverbound::PUNCH),
+            None
+        );
+        assert_eq!(
+            version.clientbound_id(State::Configuration, 14),
+            Some(ids::configuration::clientbound::SELECT_KNOWN_PACKS)
+        );
     }
 
     #[test]
