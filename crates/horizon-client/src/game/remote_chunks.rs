@@ -11,6 +11,7 @@ use horizon_core::paletted::{PalettedContainer, Strategy};
 use horizon_protocol::{
     chunk::{LightData, Paletted, SectionLight},
     packets::play::{self, Clientbound as C},
+    radio_12111::{decode_chunk_sections, remap_block_palette},
     registry::DimensionType,
 };
 use horizon_world::attachments::Holder;
@@ -32,6 +33,7 @@ pub(super) struct ChunkFormat {
     has_skylight: bool,
     biome_map: Vec<u16>,
     biome_bits: u8,
+    radio_12111: bool,
 }
 
 impl ChunkFormat {
@@ -43,12 +45,20 @@ impl ChunkFormat {
             has_skylight: dimension.has_skylight,
             biome_map,
             biome_bits,
+            radio_12111: false,
         }
     }
     /// Decodes into chunks of `column`.
     pub(super) fn in_column(self, column: ColumnLayout) -> Self {
         Self { column, ..self }
     }
+    pub(super) fn with_radio_12111(self, radio_12111: bool) -> Self {
+        Self {
+            radio_12111,
+            ..self
+        }
+    }
+
     /// The column decoded chunks hold.
     pub(super) fn layout(&self) -> ColumnLayout {
         self.column
@@ -56,20 +66,32 @@ impl ChunkFormat {
     pub(super) fn with_dimension(&self, dimension: &DimensionType) -> Self {
         Self {
             column: self.column,
+            radio_12111: self.radio_12111,
             ..Self::new(dimension, self.biome_map.clone(), self.biome_bits)
         }
     }
 
     /// LevelChunkSection data into the client's column.
     fn column(&self, p: &play::LevelChunkWithLight) -> Result<Chunk, String> {
-        let sections = p
-            .chunk
-            .sections(self.sections, 16, self.biome_bits)
-            .map_err(|e| e.to_string())?;
+        let sections: Vec<(Paletted, Paletted)> = if self.radio_12111 {
+            decode_chunk_sections(&p.chunk.buffer, self.sections, self.biome_bits).and_then(
+                |sections| {
+                    sections
+                        .into_iter()
+                        .map(|s| Ok((remap_block_palette(s.states)?, s.biomes)))
+                        .collect()
+                },
+            )
+        } else {
+            p.chunk
+                .sections(self.sections, 16, self.biome_bits)
+                .map(|sections| sections.into_iter().map(|s| (s.states, s.biomes)).collect())
+        }
+        .map_err(|e| e.to_string())?;
         let mut chunk = Chunk::with_layout(p.x, p.z, self.column);
         let offset = (self.min_y - self.column.min_y()).div_euclid(16);
         let column = self.column.sections() as i32;
-        for (i, s) in sections.iter().enumerate() {
+        for (i, (states, _)) in sections.iter().enumerate() {
             let target = offset + i as i32;
             if !(0..column).contains(&target) {
                 continue;
@@ -78,14 +100,14 @@ impl ChunkFormat {
             // from a vanilla server, wider from a Horizon host with the same
             // content mods. Read it at that width, then widen it to ours.
             let ours = block_strategy();
-            let strategy = if ours.wire_has_palette(s.states.bits) {
+            let strategy = if ours.wire_has_palette(states.bits) {
                 ours
             } else {
-                Strategy::blocks(s.states.bits)
+                Strategy::blocks(states.bits)
             };
-            let palette = s.states.palette.iter().map(|&p| p as u32).collect();
-            let words = s.states.data.iter().map(|&w| w as u64).collect();
-            let mut blocks = PalettedContainer::from_wire(strategy, s.states.bits, palette, words)
+            let palette = states.palette.iter().map(|&p| p as u32).collect();
+            let words = states.data.iter().map(|&w| w as u64).collect();
+            let mut blocks = PalettedContainer::from_wire(strategy, states.bits, palette, words)
                 .map_err(|e| e.to_string())?;
             if strategy.global_bits != ours.global_bits {
                 let mut values = [0u32; 4096];
@@ -107,7 +129,7 @@ impl ChunkFormat {
             section.compact();
             chunk.sections[target as usize] = Arc::new(section);
         }
-        let biomes: Vec<_> = sections.iter().map(|s| &s.biomes).collect();
+        let biomes: Vec<_> = sections.iter().map(|(_, biomes)| biomes).collect();
         self.put_biomes(&mut chunk, &biomes);
         // ClientPacketListener.applyLightData: the column keeps the light
         // the server sent; nothing is relit.
@@ -297,7 +319,11 @@ impl Game<'_> {
         self.world
             .block_entities
             .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));
-        for info in &p.chunk.block_entities {
+        let radio_12111 = self
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.session.is_radio_12111());
+        for info in p.chunk.block_entities.iter().filter(|_| !radio_12111) {
             let pos = (
                 x * 16 + i32::from(info.packed_xz as u8 >> 4),
                 i32::from(info.y),

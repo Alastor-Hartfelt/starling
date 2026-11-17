@@ -1015,7 +1015,12 @@ impl Game<'_> {
         // A signed-in account always plays under its own name on servers (an online-mode one
         // takes no other); single player's own server, the name its world opened with
         // (integrated.rs: a name chosen in Skin Customization goes first).
-        let auth = self.auth();
+        let radio_12111 = self.options.radio_12111
+            && local.is_none()
+            && cookies.is_none()
+            && !lan
+            && !address.starts_with(horizon_client::net::FRIEND);
+        let auth = if radio_12111 { None } else { self.auth() };
         let name = match (&auth, &local) {
             (Some(a), None) => a.name.as_str(),
             _ => name,
@@ -1034,6 +1039,13 @@ impl Game<'_> {
             Some(pipe) => {
                 Session::connect_local(pipe, name, info.clone(), lang.clone(), root.clone())
             }
+            None if radio_12111 => Session::connect_radio_12111(
+                address,
+                name,
+                info.clone(),
+                lang.clone(),
+                root.clone(),
+            ),
             None => {
                 self.extras_connecting(address, name, lan);
                 match cookies {
@@ -1171,11 +1183,14 @@ impl Game<'_> {
             dimension: DimensionType::vanilla("minecraft:overworld"),
             level: "minecraft:overworld".into(),
             hashed_seed: 0,
-            chunk_format: Arc::new(ChunkFormat::new(
-                &DimensionType::vanilla("minecraft:overworld"),
-                Vec::new(),
-                7,
-            )),
+            chunk_format: Arc::new(
+                ChunkFormat::new(
+                    &DimensionType::vanilla("minecraft:overworld"),
+                    Vec::new(),
+                    7,
+                )
+                .with_radio_12111(radio_12111),
+            ),
             decoder: ChunkDecoder::new(),
             view_distance: self.settings.render_distance,
             simulation_distance: self.settings.simulation_distance,
@@ -2512,8 +2527,11 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             let bits = ceil_log2(biomes.len());
             let column = r.chunk_format.layout();
-            r.chunk_format =
-                Arc::new(ChunkFormat::new(&r.dimension, biomes, bits).in_column(column));
+            r.chunk_format = Arc::new(
+                ChunkFormat::new(&r.dimension, biomes, bits)
+                    .in_column(column)
+                    .with_radio_12111(r.session.is_radio_12111()),
+            );
             r.registries = registries;
         }
     }

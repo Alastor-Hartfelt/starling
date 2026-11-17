@@ -3,12 +3,14 @@
 use horizon_client_lib::net::{Event, Session};
 use horizon_protocol::{
     crypto::offline_uuid,
-    packets::{Empty, play},
+    packets::{Empty, configuration, play},
     radio_12111::{decode_chunk_sections, remap_block_palette},
     registry::{Dynamic, ceil_log2},
+    text::Language,
 };
 use std::{
     error::Error,
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -193,7 +195,13 @@ fn main() -> ProbeResult<()> {
         Some(_) => return Err("expected --require-nether".into()),
     };
     run(
-        &Session::connect_radio_probe(&address, "RadioProbe"),
+        &Session::connect_radio_12111(
+            &address,
+            "RadioProbe",
+            configuration::ClientInformation::new(3),
+            Arc::new(Language::new()),
+            Default::default(),
+        ),
         require_nether,
     )
 }

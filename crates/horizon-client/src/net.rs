@@ -104,14 +104,14 @@ pub enum Event {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Wire {
     Current,
-    RadioProbe,
+    Radio12111,
 }
 
 impl Wire {
     fn version(self) -> ServerVersion {
         match self {
             Self::Current => ServerVersion::Current,
-            Self::RadioProbe => ServerVersion::V1_21_11,
+            Self::Radio12111 => ServerVersion::V1_21_11,
         }
     }
 
@@ -135,7 +135,7 @@ impl Wire {
         writer: &mut ConnWriter,
         packet: play::Serverbound,
     ) -> horizon_protocol::Result<()> {
-        if self == Self::RadioProbe {
+        if self == Self::Radio12111 {
             match packet {
                 play::Serverbound::AcceptTeleportation(p) => {
                     writer.send(&radio_12111::encode_teleport_ack(p.id))?;
@@ -154,8 +154,14 @@ impl Wire {
                 | play::Serverbound::CookieResponse(_)
                 | play::Serverbound::ClientTickEnd(_)
                 | play::Serverbound::ChunkBatchReceived(_)
-                | play::Serverbound::PlayerLoaded(_) => {}
-                // The probe has only verified a subset of the 774 play payloads.
+                | play::Serverbound::PlayerLoaded(_)
+                | play::Serverbound::ClientInformation(_)
+                | play::Serverbound::MovePlayerPos(_)
+                | play::Serverbound::MovePlayerPosRot(_)
+                | play::Serverbound::MovePlayerRot(_)
+                | play::Serverbound::MovePlayerStatus(_)
+                | play::Serverbound::PlayerInput(_) => {}
+                // Only send the supported subset of protocol 774 play packets.
                 _ => return Ok(()),
             }
         }
@@ -185,7 +191,7 @@ impl Wire {
                     show_death_screen: p.show_death_screen,
                     limited_crafting: p.limited_crafting,
                     spawn: p.spawn.into(),
-                    online_mode: false, // This connection is only used by the offline probe.
+                    online_mode: false, // Protocol 774 sessions currently support offline login.
                     enforces_secure_chat: p.enforces_secure_chat,
                 })
             }
@@ -200,8 +206,25 @@ impl Wire {
                 // Section palettes still contain 1.21.11 state IDs and wire bytes.
                 play::Clientbound::LevelChunkWithLight(radio_12111::decode_level_chunk(payload)?)
             }
+            canonical::BLOCK_UPDATE => {
+                let play::Clientbound::BlockUpdate(mut p) = play::Clientbound::decode(id, payload)?
+                else {
+                    unreachable!();
+                };
+                p.state = radio_12111::block_state_to_engine(p.state).ok_or_else(|| {
+                    horizon_protocol::Error::new("unknown 1.21.11 block update state")
+                })?;
+                play::Clientbound::BlockUpdate(p)
+            }
             canonical::PLAYER_POSITION
             | canonical::CHUNK_BATCH_FINISHED
+            | canonical::FORGET_LEVEL_CHUNK
+            | canonical::GAME_EVENT
+            | canonical::SET_CHUNK_CACHE_CENTER
+            | canonical::SET_CHUNK_CACHE_RADIUS
+            | canonical::SET_SIMULATION_DISTANCE
+            | canonical::PLAYER_ABILITIES
+            | canonical::SET_HEALTH
             | canonical::KEEP_ALIVE
             | canonical::PING
             | canonical::DISCONNECT
@@ -255,21 +278,31 @@ impl Session {
             Wire::Current,
         )
     }
-    /// An offline 1.21.11 session for the multiplayer smoke probe. Its chunk packets
-    /// carry 1.21.11 section data and must not be forwarded to the current game renderer.
-    pub fn connect_radio_probe(address: &str, name: &str) -> Self {
+    /// Experimental offline-mode 1.21.11 terrain session.
+    pub fn connect_radio_12111(
+        address: &str,
+        name: &str,
+        info: cfg::ClientInformation,
+        lang: Arc<Language>,
+        resources: PathBuf,
+    ) -> Self {
         Self::start(
             address,
             name,
             None,
-            cfg::ClientInformation::new(3),
-            Arc::new(Language::new()),
+            info,
+            lang,
             None,
             None,
-            PathBuf::new(),
+            resources,
             false,
-            Wire::RadioProbe,
+            Wire::Radio12111,
         )
+    }
+
+    /// This session's chunk buffers use the 1.21.11 section format.
+    pub fn is_radio_12111(&self) -> bool {
+        self.wire == Wire::Radio12111
     }
 
     /// `ClientHandshakePacketListenerImpl.handleHello`: LAN entries can continue
@@ -829,7 +862,7 @@ fn run(
     .map_err(e)?;
     let profile = loop {
         let (id, payload) = c.recv().map_err(e)?;
-        if wire == Wire::RadioProbe && id == ids::login::clientbound::LOGIN_FINISHED {
+        if wire == Wire::Radio12111 && id == ids::login::clientbound::LOGIN_FINISHED {
             let profile = radio_12111::decode_login_finished(&payload)
                 .map_err(e)?
                 .profile;
@@ -847,9 +880,9 @@ fn run(
             login::Clientbound::Disconnect(p) => {
                 return Ok(Reason::component(&p.reason_json, lang));
             }
-            login::Clientbound::Hello(_) if wire == Wire::RadioProbe => {
+            login::Clientbound::Hello(_) if wire == Wire::Radio12111 => {
                 return Err(Reason::plain(
-                    "The 1.21.11 probe requires an offline-mode server",
+                    "The experimental 1.21.11 session requires an offline-mode server",
                 ));
             }
             login::Clientbound::Hello(hello) => {
@@ -1018,7 +1051,7 @@ fn receive_play(
         match packet {
             play::Clientbound::KeepAlive(k) => {
                 reply(play::Serverbound::KeepAlive(k.clone()))?;
-                if wire == Wire::RadioProbe {
+                if wire == Wire::Radio12111 {
                     let _ = send.send(Event::Packet(Box::new(play::Clientbound::KeepAlive(k))));
                 }
             }
