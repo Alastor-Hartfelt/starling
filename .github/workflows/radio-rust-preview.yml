@@ -14,12 +14,11 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: radio-rust-preview-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   desktop:
+    concurrency:
+      group: radio-rust-preview-linux-x86_64-${{ github.ref }}
+      cancel-in-progress: false
     name: Linux x86-64 engine preview
     if: github.ref == 'refs/heads/radio-client-rust'
     # Keep the Linux executable usable on hosts with Ubuntu 24.04-era glibc.
@@ -49,6 +48,9 @@ jobs:
           if-no-files-found: error
 
   android:
+    concurrency:
+      group: radio-rust-preview-android-arm64-${{ github.ref }}
+      cancel-in-progress: false
     name: Android ARM64 engine preview
     if: github.ref == 'refs/heads/radio-client-rust'
     runs-on: ubuntu-latest
