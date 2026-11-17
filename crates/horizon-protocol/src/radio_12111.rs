@@ -1,12 +1,14 @@
 //! First wire-format pieces for Minecraft Java 1.21.11 (protocol 774).
 //!
-//! Used by the Radio headless probe. The game connection still uses the
-//! inherited 26.3 codecs.
+//! The headless probe exercises these codecs through the client session.
+//! The graphical game still uses the inherited 26.3 protocol.
+
+mod block_state_ranges;
 
 use crate::{
     Result,
     buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Reader, UByte, VarInt, Writer},
-    chunk::{ChunkData, Layers, LightData, Paletted, Strategy},
+    chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy, pack},
     ids, packet,
     packets::{handshake, login, play},
 };
@@ -181,8 +183,6 @@ pub fn decode_chunk_sections(
     count: usize,
     biome_bits: u8,
 ) -> Result<Vec<ChunkSection12111>> {
-    // The 1.21.11 vanilla block report has 29,671 global state IDs.
-    const BLOCK_BITS: u8 = 15;
     // Each section needs at least two count bytes and two singleton palettes.
     if count > payload.len() / 6 {
         return Err(crate::Error::new("truncated 1.21.11 chunk section buffer"));
@@ -200,7 +200,7 @@ pub fn decode_chunk_sections(
         }
         sections.push(ChunkSection12111 {
             non_empty,
-            states: Paletted::read(&mut r, Strategy::Blocks, BLOCK_BITS)?,
+            states: Paletted::read(&mut r, Strategy::Blocks, block_state_ranges::SOURCE_BITS)?,
             biomes: Paletted::read(&mut r, Strategy::Biomes, biome_bits)?,
         });
     }
@@ -210,6 +210,58 @@ pub fn decode_chunk_sections(
         ));
     }
     Ok(sections)
+}
+
+// The generated runs are expanded at compile time. Decoding a direct palette
+// needs a fixed-size table lookup per block, even when the IDs are reordered.
+static BLOCK_STATES: [u16; block_state_ranges::SOURCE_LEN] = {
+    use block_state_ranges::{SOURCE_LEN, STARTS};
+    let mut table = [0; SOURCE_LEN];
+    let mut run = 0;
+    let mut id = 0;
+    while id < SOURCE_LEN {
+        if run + 1 < STARTS.len() && id == STARTS[run + 1].0 as usize {
+            run += 1;
+        }
+        let (source, target) = STARTS[run];
+        table[id] = target + (id as u16 - source);
+        id += 1;
+    }
+    table
+};
+
+/// The exact 26.3 block state corresponding to a vanilla 1.21.11 state ID.
+pub fn block_state_to_engine(id: i32) -> Option<i32> {
+    usize::try_from(id)
+        .ok()
+        .and_then(|i| BLOCK_STATES.get(i).copied())
+        .map(i32::from)
+}
+
+/// Translate a decoded block palette into 26.3 IDs. Indirect palettes keep
+/// their existing indices. Direct palettes are repacked at the engine width.
+pub fn remap_block_palette(mut blocks: Paletted) -> Result<Paletted> {
+    let remap = |id| {
+        block_state_to_engine(id)
+            .ok_or_else(|| crate::Error::new(format!("unknown 1.21.11 block state ID {id}")))
+    };
+    if blocks.palette.is_empty() {
+        if blocks.bits != block_state_ranges::SOURCE_BITS
+            || blocks.data.len() != crate::chunk::storage_len(blocks.bits, BLOCKS)
+        {
+            return Err(crate::Error::new("invalid 1.21.11 direct block palette"));
+        }
+        let values = (0..BLOCKS)
+            .map(|index| remap(blocks.get(index)))
+            .collect::<Result<Vec<_>>>()?;
+        blocks.bits = block_state_ranges::TARGET_BITS;
+        blocks.data = pack(&values, blocks.bits, |&id| id as u64);
+    } else {
+        for id in &mut blocks.palette {
+            *id = remap(*id)?;
+        }
+    }
+    Ok(blocks)
 }
 
 /// 1.21.11 acknowledges the teleport ID. Position and rotation follow in
@@ -225,6 +277,37 @@ pub fn encode_teleport_ack(id: i32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_palettes_translate_ids_from_vanilla_reports() {
+        // Default minecraft:oak_leaves is 279 in 1.21.11 and 294 in 26.3.
+        let blocks: Vec<i32> = (0..BLOCKS)
+            .map(|i| if i % 2 == 0 { 279 } else { 1 })
+            .collect();
+        let original = Paletted::from_values(&blocks, Strategy::Blocks, 15);
+        let remapped = remap_block_palette(original.clone()).unwrap();
+        assert_eq!(remapped.data, original.data);
+        assert_eq!([remapped.get(0), remapped.get(1)], [294, 1]);
+
+        let blocks: Vec<i32> = (0..BLOCKS as i32).collect();
+        let original = Paletted::from_values(&blocks, Strategy::Blocks, 15);
+        assert!(original.palette.is_empty());
+        let remapped = remap_block_palette(original).unwrap();
+        assert_eq!(remapped.bits, 16);
+        assert_eq!(
+            [remapped.get(0), remapped.get(279), remapped.get(280)],
+            [0, 294, 295]
+        );
+
+        assert!(
+            remap_block_palette(Paletted::from_values(
+                &[29671; BLOCKS],
+                Strategy::Blocks,
+                15
+            ))
+            .is_err()
+        );
+    }
 
     #[test]
     fn play_login_reads_byte_game_modes_and_one_chat_flag() {

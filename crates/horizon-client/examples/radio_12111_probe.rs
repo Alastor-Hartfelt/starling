@@ -4,7 +4,7 @@ use horizon_client_lib::net::{Event, Session};
 use horizon_protocol::{
     crypto::offline_uuid,
     packets::{Empty, play},
-    radio_12111::decode_chunk_sections,
+    radio_12111::{decode_chunk_sections, remap_block_palette},
     registry::{Dynamic, ceil_log2},
 };
 use std::{
@@ -133,8 +133,14 @@ fn run(session: &Session, require_nether: bool) -> ProbeResult<()> {
                 C::LevelChunkWithLight(p) => {
                     let level = level.as_mut().ok_or("chunk received before Play Login")?;
                     let biome_bits = ceil_log2(registries.len("minecraft:worldgen/biome"));
-                    decode_chunk_sections(&p.chunk.buffer, level.sections, biome_bits)
-                        .map_err(|e| format!("chunk ({}, {}) in {}: {e}", p.x, p.z, level.name))?;
+                    let sections =
+                        decode_chunk_sections(&p.chunk.buffer, level.sections, biome_bits)
+                            .map_err(|e| {
+                                format!("chunk ({}, {}) in {}: {e}", p.x, p.z, level.name)
+                            })?;
+                    for section in sections {
+                        remap_block_palette(section.states)?;
+                    }
                     level.saw_chunk = true;
                     chunks += 1;
                 }
@@ -164,7 +170,7 @@ fn run(session: &Session, require_nether: bool) -> ProbeResult<()> {
             && keepalives >= 2
         {
             println!(
-                "1.21.11 join passed ({chunks} decoded chunks, {batches} batches, {keepalives} keepalives)"
+                "1.21.11 join passed ({chunks} decoded and remapped chunks, {batches} batches, {keepalives} keepalives)"
             );
             return Ok(());
         }

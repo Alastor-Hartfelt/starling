@@ -58,7 +58,7 @@ pub fn storage_len(bits: u8, entries: usize) -> usize {
 }
 
 /// SimpleBitStorage's longs for `values` at `bits` each, a long at a time.
-fn pack<T>(values: &[T], bits: u8, id: impl Fn(&T) -> u64) -> Vec<i64> {
+pub(crate) fn pack<T>(values: &[T], bits: u8, id: impl Fn(&T) -> u64) -> Vec<i64> {
     let per = 64 / bits as usize;
     values
         .chunks(per)
