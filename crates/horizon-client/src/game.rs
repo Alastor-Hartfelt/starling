@@ -18825,12 +18825,44 @@ impl Game<'_> {
             event_loop.exit();
             return;
         }
-        if self.renderer.as_ref().is_some_and(|r| r.detached) {
-            // No window to draw in (Android in the background): wake now and then for the
-            // control socket instead of spinning.
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                Instant::now() + Duration::from_millis(100),
-            ));
+        let remote_poll_interval = Duration::from_millis(50);
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.previous);
+        let detached = self.renderer.as_ref().is_some_and(|r| r.detached);
+        if self.remote.is_some()
+            && !self.options.headless
+            && (!self.focused || detached)
+            && elapsed >= remote_poll_interval
+        {
+            // A hidden desktop window or a suspended Android surface can stop delivering
+            // redraws. Keep processing ordered server packets (teleports, pings, chunks)
+            // and client ticks while the event loop is still running. Share the redraw
+            // clock so the next frame only advances time that has not been ticked here.
+            self.previous = now;
+            self.frame_drawn = false;
+            if let Err(error) = self.poll_remote() {
+                log::warn!("Horizon: {error}");
+            }
+            for _ in 0..self.clock.advance(elapsed) {
+                if self.remote.is_none() || self.title.is_some() || self.pause {
+                    break;
+                }
+                if let Err(error) = self.tick() {
+                    self.error = Some(error);
+                    self.exit_on_error(event_loop);
+                    return;
+                }
+                self.tick_chat_queue();
+            }
+        }
+        if detached {
+            // No surface to draw to. Wake for multiplayer or the control socket.
+            let delay = if self.remote.is_some() {
+                remote_poll_interval
+            } else {
+                Duration::from_millis(100)
+            };
+            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + delay));
             return;
         }
         if let Some(w) = &self.window {

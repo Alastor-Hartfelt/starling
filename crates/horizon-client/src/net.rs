@@ -804,12 +804,16 @@ fn receive_play(
             }
         };
         let reply = |p: play::Serverbound| {
-            if let Some(w) = shared_writer.lock().unwrap().as_mut() {
-                let _ = w.send(&p.encode());
-            }
+            shared_writer
+                .lock()
+                .unwrap()
+                .as_mut()
+                .ok_or_else(|| Reason::plain("Disconnected"))?
+                .send(&p.encode())
+                .map_err(|e| Reason::plain(connection_lost(e, lang)))
         };
         match packet {
-            play::Clientbound::KeepAlive(k) => reply(play::Serverbound::KeepAlive(k)),
+            play::Clientbound::KeepAlive(k) => reply(play::Serverbound::KeepAlive(k))?,
             play::Clientbound::BundleDelimiter(_) => {}
             play::Clientbound::ResourcePackPush(p) => {
                 let _ = send.send(Event::PackPush(p));
@@ -819,8 +823,13 @@ fn receive_play(
             }
             play::Clientbound::StartConfiguration(_) => {
                 let _ = send.send(Event::Reconfiguring);
-                if let Some(w) = shared_writer.lock().unwrap().as_mut() {
-                    let _ = w.send(&play::Serverbound::ConfigurationAcknowledged(Empty).encode());
+                {
+                    let mut writer = shared_writer.lock().unwrap();
+                    let w = writer
+                        .as_mut()
+                        .ok_or_else(|| Reason::plain("Disconnected"))?;
+                    w.send(&play::Serverbound::ConfigurationAcknowledged(Empty).encode())
+                        .map_err(|e| Reason::plain(connection_lost(e, lang)))?;
                     configuring.store(true, Ordering::Relaxed);
                 }
                 let registries = match configure(
@@ -844,7 +853,7 @@ fn receive_play(
                 reply(play::Serverbound::CookieResponse(cfg::CookieResponse {
                     key: q.key,
                     payload,
-                }));
+                }))?;
             }
             play::Clientbound::StoreCookie(p) => {
                 cookies.lock().unwrap().insert(p.key, p.payload);
@@ -1491,6 +1500,10 @@ mod tests {
             )
         });
         let mut server = Connection::local(server);
+        server
+            .reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let teleport = play::Clientbound::PlayerPosition(play::PlayerPosition {
             teleport: 42,
             position: [10.0, 64.0, 10.0],
@@ -1525,7 +1538,7 @@ mod tests {
     }
 
     #[test]
-    fn play_packets_wait_out_a_reconfiguration() {
+    fn configuration_keepalive_bypasses_game_while_play_packets_wait() {
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let (mut reader, writer) = Connection::local(client).split();
         let (send, events) = channel();
@@ -1556,6 +1569,10 @@ mod tests {
             )
         });
         let mut server = Connection::local(server);
+        server
+            .reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let tick_end = play::Serverbound::ClientTickEnd(Empty);
         server
             .send(&play::Clientbound::StartConfiguration(Empty).encode())
@@ -1565,8 +1582,18 @@ mod tests {
             play::Serverbound::decode(id, &body).unwrap(),
             play::Serverbound::ConfigurationAcknowledged(Empty)
         );
-        // The game thread still ticks the old level: nothing of it goes out.
+        // The game thread can stall or keep ticking the old level. The read
+        // thread still answers in the current phase, without any event polls.
         session.send(tick_end.clone());
+        let keepalive = cfg::KeepAlive { id: i64::MIN + 42 };
+        server
+            .send(&cfg::Clientbound::KeepAlive(keepalive.clone()).encode())
+            .unwrap();
+        let (id, body) = server.recv().unwrap();
+        assert_eq!(
+            cfg::Serverbound::decode(id, &body).unwrap(),
+            cfg::Serverbound::KeepAlive(keepalive)
+        );
         server
             .send(&cfg::Clientbound::FinishConfiguration(Empty).encode())
             .unwrap();
