@@ -9,8 +9,10 @@ use horizon_protocol::{
     ids,
     packets::{Empty, configuration as cfg, handshake, login, play},
     radio_12111::{
-        decode_login_finished, decode_play_login, encode_teleport_ack, handshake_packet,
+        decode_chunk_sections, decode_level_chunk, decode_login_finished, decode_play_login,
+        encode_teleport_ack, handshake_packet,
     },
+    registry::{Dynamic, ceil_log2},
     servers::parse_address,
 };
 use std::{
@@ -77,8 +79,9 @@ fn login(c: &mut Connection, host: &str, port: u16) -> ProbeResult<()> {
     }
 }
 
-fn configure(c: &mut Connection) -> ProbeResult<()> {
+fn configure(c: &mut Connection) -> ProbeResult<Dynamic> {
     let state = State::Configuration;
+    let mut registries = Dynamic::default();
     send(
         c,
         state,
@@ -102,12 +105,17 @@ fn configure(c: &mut Connection) -> ProbeResult<()> {
                 })
             }
             cfg::Clientbound::Disconnect(p) => return Err(format!("{:?}", p.reason).into()),
+            cfg::Clientbound::RegistryData(p) => {
+                registries.add(p);
+                continue;
+            }
             cfg::Clientbound::FinishConfiguration(_) => {
-                return send(
+                send(
                     c,
                     state,
                     &cfg::Serverbound::FinishConfiguration(Empty).encode(),
-                );
+                )?;
+                return Ok(registries);
             }
             _ => continue,
         };
@@ -115,13 +123,15 @@ fn configure(c: &mut Connection) -> ProbeResult<()> {
     }
 }
 
-fn play(c: &mut Connection) -> ProbeResult<()> {
+fn play(c: &mut Connection, registries: &Dynamic) -> ProbeResult<()> {
     use ids::play::clientbound as id;
 
     let state = State::Play;
     let deadline = Instant::now() + Duration::from_secs(40);
     c.reader.set_read_timeout(Some(Duration::from_millis(50)))?;
-    let mut joined = false;
+    let mut dimension = None;
+    let biome_bits = ceil_log2(registries.len("minecraft:worldgen/biome"));
+    let mut chunks = 0;
     let mut teleported = false;
     let mut batches = 0;
     let mut keepalives = 0;
@@ -147,7 +157,13 @@ fn play(c: &mut Connection) -> ProbeResult<()> {
                     "entered play as entity {} in {}",
                     login.player_id, login.spawn.dimension
                 );
-                joined = true;
+                if registries
+                    .name("minecraft:dimension_type", login.spawn.dimension_type)
+                    .is_none()
+                {
+                    return Err("Play Login names an unsynchronized dimension type".into());
+                }
+                dimension = Some(registries.dimension(login.spawn.dimension_type));
             }
             id::PLAYER_POSITION => {
                 let play::Clientbound::PlayerPosition(p) = play::Clientbound::decode(id, &body)?
@@ -178,6 +194,16 @@ fn play(c: &mut Connection) -> ProbeResult<()> {
                     teleported = true;
                 }
             }
+            id::LEVEL_CHUNK_WITH_LIGHT => {
+                let p = decode_level_chunk(&body)?;
+                let section_count = dimension
+                    .as_ref()
+                    .ok_or("chunk received before Play Login")?
+                    .sections();
+                decode_chunk_sections(&p.chunk.buffer, section_count, biome_bits)
+                    .map_err(|e| format!("chunk ({}, {}): {e}", p.x, p.z))?;
+                chunks += 1;
+            }
             id::CHUNK_BATCH_FINISHED => {
                 play::Clientbound::decode(id, &body)?;
                 send(
@@ -207,12 +233,14 @@ fn play(c: &mut Connection) -> ProbeResult<()> {
             }
             _ => {}
         }
-        if joined && teleported && batches > 0 && keepalives >= 2 {
-            println!("1.21.11 join passed ({batches} chunk batches, {keepalives} keepalives)");
+        if dimension.is_some() && teleported && chunks > 0 && batches > 0 && keepalives >= 2 {
+            println!(
+                "1.21.11 join passed ({chunks} decoded chunks, {batches} batches, {keepalives} keepalives)"
+            );
             return Ok(());
         }
     }
-    Err(format!("join incomplete: joined={joined}, teleported={teleported}, batches={batches}, keepalives={keepalives}").into())
+    Err(format!("join incomplete: teleported={teleported}, chunks={chunks}, batches={batches}, keepalives={keepalives}").into())
 }
 
 fn main() -> ProbeResult<()> {
@@ -222,7 +250,7 @@ fn main() -> ProbeResult<()> {
     c.reader.set_read_timeout(Some(IO_TIMEOUT))?;
     login(&mut c, &host, port).map_err(|e| format!("login: {e}"))?;
     println!("login profile accepted");
-    configure(&mut c).map_err(|e| format!("configuration: {e}"))?;
+    let registries = configure(&mut c).map_err(|e| format!("configuration: {e}"))?;
     println!("configuration complete");
-    play(&mut c).map_err(|e| format!("play: {e}").into())
+    play(&mut c, &registries).map_err(|e| format!("play: {e}").into())
 }

@@ -6,6 +6,7 @@
 use crate::{
     Result,
     buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Reader, UByte, VarInt, Writer},
+    chunk::{ChunkData, Layers, LightData, Paletted, Strategy},
     ids, packet,
     packets::{handshake, login, play},
 };
@@ -98,6 +99,81 @@ pub fn decode_play_login(payload: &[u8]) -> Result<PlayLogin12111> {
     Ok(login)
 }
 
+/// Decode a 1.21.11 Level Chunk With Light payload after removing its packet ID.
+pub fn decode_level_chunk(payload: &[u8]) -> Result<play::LevelChunkWithLight> {
+    let mut r = Reader::new(payload);
+    let x = r.i32()?;
+    let z = r.i32()?;
+    let chunk = ChunkData::read(&mut r)?;
+    // 1.21.11 sends BitSet.toLongArray(), with each long big-endian on the wire.
+    // The shared LightData uses low-bit-first bytes for mask lookup.
+    let read_mask = |r: &mut Reader| -> Result<Vec<u8>> {
+        Ok(r.long_array()?
+            .into_iter()
+            .flat_map(i64::to_le_bytes)
+            .collect())
+    };
+    let light = LightData {
+        sky_mask: read_mask(&mut r)?,
+        block_mask: read_mask(&mut r)?,
+        empty_sky_mask: read_mask(&mut r)?,
+        empty_block_mask: read_mask(&mut r)?,
+        sky: Layers::read(&mut r)?,
+        block: Layers::read(&mut r)?,
+    };
+    if r.remaining() != 0 {
+        return Err(crate::Error::new(
+            "unexpected trailing bytes in 1.21.11 chunk packet",
+        ));
+    }
+    Ok(play::LevelChunkWithLight { x, z, chunk, light })
+}
+
+/// The 1.21.11 section header carries a block count followed by both palettes.
+#[derive(Debug, PartialEq)]
+pub struct ChunkSection12111 {
+    pub non_empty: i16,
+    pub states: Paletted,
+    pub biomes: Paletted,
+}
+
+/// Decode the section buffer in a vanilla 1.21.11 chunk packet.
+pub fn decode_chunk_sections(
+    payload: &[u8],
+    count: usize,
+    biome_bits: u8,
+) -> Result<Vec<ChunkSection12111>> {
+    // The 1.21.11 vanilla block report has 29,671 global state IDs.
+    const BLOCK_BITS: u8 = 15;
+    // Each section needs at least two count bytes and two singleton palettes.
+    if count > payload.len() / 6 {
+        return Err(crate::Error::new("truncated 1.21.11 chunk section buffer"));
+    }
+    let mut r = Reader::new(payload);
+    let mut sections = Vec::with_capacity(count);
+    for _ in 0..count {
+        let non_empty = r.i16()?;
+        // Vanilla counts a non-air block and a non-empty fluid separately.
+        if !(0..=8192).contains(&non_empty) {
+            return Err(crate::Error::new(format!(
+                "invalid 1.21.11 section block count {non_empty} at byte {}",
+                r.position() - 2
+            )));
+        }
+        sections.push(ChunkSection12111 {
+            non_empty,
+            states: Paletted::read(&mut r, Strategy::Blocks, BLOCK_BITS)?,
+            biomes: Paletted::read(&mut r, Strategy::Biomes, biome_bits)?,
+        });
+    }
+    if r.remaining() != 0 {
+        return Err(crate::Error::new(
+            "unexpected trailing bytes in 1.21.11 chunk sections",
+        ));
+    }
+    Ok(sections)
+}
+
 /// 1.21.11 acknowledges the teleport ID. Position and rotation follow in
 /// a separate movement packet.
 pub fn encode_teleport_ack(id: i32) -> Vec<u8> {
@@ -137,6 +213,43 @@ mod tests {
         assert!(decode_play_login(&payload[..payload.len() - 1]).is_err());
         payload.push(0);
         assert!(decode_play_login(&payload).is_err());
+    }
+
+    #[test]
+    fn chunk_light_masks_decode_from_big_endian_longs() {
+        let mut payload = vec![
+            0xff, 0xff, 0xff, 0xfd, 0, 0, 0, 4, // chunk (-3, 4)
+            0, 0, 0, // empty heightmaps, section data and block entities
+            0, 0, // no populated sky or block light
+            1, 0, 0, 0, 0, 0, 0, 1, 1, // one big-endian long; empty sky bits 0 and 8
+            0, 0, 0, // no empty block light or light data arrays
+        ];
+        let packet = decode_level_chunk(&payload).unwrap();
+        assert_eq!((packet.x, packet.z), (-3, 4));
+        assert!(crate::buf::bit(&packet.light.empty_sky_mask, 0));
+        assert!(crate::buf::bit(&packet.light.empty_sky_mask, 8));
+        assert!(!crate::buf::bit(&packet.light.empty_sky_mask, 9));
+        payload.push(0);
+        assert!(decode_level_chunk(&payload).is_err());
+    }
+
+    #[test]
+    fn section_header_has_one_block_count() {
+        let payload = [0, 0, 0, 0, 0, 42];
+        let sections = decode_chunk_sections(&payload, 1, 6).unwrap();
+        assert_eq!(sections[0].non_empty, 0);
+        assert_eq!(sections[0].states.get(4095), 0);
+        assert_eq!(sections[0].biomes.get(63), 42);
+        assert!(decode_chunk_sections(&payload, 2, 6).is_err());
+        let fluid_filled = [0x20, 0, 0, 0, 0, 42];
+        assert_eq!(
+            decode_chunk_sections(&fluid_filled, 1, 6).unwrap()[0].non_empty,
+            8192
+        );
+
+        let mut with_extra_count = payload.to_vec();
+        with_extra_count.splice(2..2, [0, 0]);
+        assert!(decode_chunk_sections(&with_extra_count, 1, 6).is_err());
     }
 
     #[test]
