@@ -70,6 +70,24 @@ packet!(
     }
 );
 
+impl From<SpawnInfo12111> for play::SpawnInfo {
+    fn from(p: SpawnInfo12111) -> Self {
+        Self {
+            dimension_type: p.dimension_type,
+            dimension: p.dimension,
+            seed: p.seed,
+            game_type: i32::from(p.game_type),
+            previous_game_type: (p.previous_game_type >= 0)
+                .then_some(i32::from(p.previous_game_type)),
+            debug: p.debug,
+            flat: p.flat,
+            last_death: p.last_death,
+            portal_cooldown: p.portal_cooldown,
+            sea_level: p.sea_level,
+        }
+    }
+}
+
 packet!(
     /// The first Play packet in 1.21.11, distinct from Login Success.
     PlayLogin12111 {

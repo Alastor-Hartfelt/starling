@@ -8,10 +8,13 @@
 //! encrypts the connection (ClientHandshakePacketListenerImpl.handleHello).
 use crate::auth::AuthSession;
 use horizon_protocol::{
-    PROTOCOL_VERSION,
+    PROTOCOL_VERSION, State,
+    adapter::ServerVersion,
     connection::{ConnReader, ConnWriter, Connection, Counters},
     crypto::{generate_secret, offline_uuid, server_hash},
+    ids,
     packets::{Empty, configuration as cfg, handshake, login, play},
+    radio_12111,
     registry::Dynamic,
     rsa::RsaPublicKey,
     servers::parse_address,
@@ -98,8 +101,122 @@ pub enum Event {
     },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Wire {
+    Current,
+    RadioProbe,
+}
+
+impl Wire {
+    fn version(self) -> ServerVersion {
+        match self {
+            Self::Current => ServerVersion::Current,
+            Self::RadioProbe => ServerVersion::V1_21_11,
+        }
+    }
+
+    fn send(
+        self,
+        writer: &mut ConnWriter,
+        state: State,
+        body: &[u8],
+    ) -> horizon_protocol::Result<()> {
+        if self == Self::Current {
+            return writer.send(body);
+        }
+        if let Some(body) = self.version().serverbound_body(state, body)? {
+            writer.send(&body)?;
+        }
+        Ok(())
+    }
+
+    fn send_play(
+        self,
+        writer: &mut ConnWriter,
+        packet: play::Serverbound,
+    ) -> horizon_protocol::Result<()> {
+        if self == Self::RadioProbe {
+            match packet {
+                play::Serverbound::AcceptTeleportation(p) => {
+                    writer.send(&radio_12111::encode_teleport_ack(p.id))?;
+                    let position = play::Serverbound::MovePlayerPosRot(play::MovePlayerPosRot {
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        yaw: p.yaw,
+                        pitch: p.pitch,
+                        flags: 0,
+                    });
+                    return self.send(writer, State::Play, &position.encode());
+                }
+                play::Serverbound::KeepAlive(_)
+                | play::Serverbound::Pong(_)
+                | play::Serverbound::CookieResponse(_)
+                | play::Serverbound::ClientTickEnd(_)
+                | play::Serverbound::ChunkBatchReceived(_)
+                | play::Serverbound::PlayerLoaded(_) => {}
+                // The probe has only verified a subset of the 774 play payloads.
+                _ => return Ok(()),
+            }
+        }
+        self.send(writer, State::Play, &packet.encode())
+    }
+
+    fn decode_play(
+        self,
+        id: i32,
+        payload: &[u8],
+    ) -> horizon_protocol::Result<Option<play::Clientbound>> {
+        use ids::play::clientbound as canonical;
+        if self == Self::Current {
+            return play::Clientbound::decode(id, payload).map(Some);
+        }
+        let packet = match id {
+            canonical::LOGIN => {
+                let p = radio_12111::decode_play_login(payload)?;
+                play::Clientbound::Login(play::Login {
+                    player_id: p.player_id,
+                    hardcore: p.hardcore,
+                    levels: p.levels,
+                    max_players: p.max_players,
+                    chunk_radius: p.chunk_radius,
+                    simulation_distance: p.simulation_distance,
+                    reduced_debug_info: p.reduced_debug_info,
+                    show_death_screen: p.show_death_screen,
+                    limited_crafting: p.limited_crafting,
+                    spawn: p.spawn.into(),
+                    online_mode: false, // This connection is only used by the offline probe.
+                    enforces_secure_chat: p.enforces_secure_chat,
+                })
+            }
+            canonical::RESPAWN => {
+                let p = radio_12111::decode_respawn(payload)?;
+                play::Clientbound::Respawn(play::Respawn {
+                    spawn: p.spawn.into(),
+                    keep: p.keep,
+                })
+            }
+            canonical::LEVEL_CHUNK_WITH_LIGHT => {
+                // Section palettes still contain 1.21.11 state IDs and wire bytes.
+                play::Clientbound::LevelChunkWithLight(radio_12111::decode_level_chunk(payload)?)
+            }
+            canonical::PLAYER_POSITION
+            | canonical::CHUNK_BATCH_FINISHED
+            | canonical::KEEP_ALIVE
+            | canonical::PING
+            | canonical::DISCONNECT
+            | canonical::START_CONFIGURATION
+            | canonical::COOKIE_REQUEST
+            | canonical::STORE_COOKIE => play::Clientbound::decode(id, payload)?,
+            _ => return Ok(None),
+        };
+        Ok(Some(packet))
+    }
+}
+
 pub struct Session {
     events: Receiver<Event>,
+    wire: Wire,
     writer: Arc<Mutex<Option<ConnWriter>>>,
     /// The connection is in configuration (else in play). Changed only
     /// with `writer` locked, as the packet that switches is sent.
@@ -126,9 +243,35 @@ impl Session {
         resources: PathBuf,
     ) -> Self {
         Self::start(
-            address, name, auth, info, lang, None, None, resources, false,
+            address,
+            name,
+            auth,
+            info,
+            lang,
+            None,
+            None,
+            resources,
+            false,
+            Wire::Current,
         )
     }
+    /// An offline 1.21.11 session for the multiplayer smoke probe. Its chunk packets
+    /// carry 1.21.11 section data and must not be forwarded to the current game renderer.
+    pub fn connect_radio_probe(address: &str, name: &str) -> Self {
+        Self::start(
+            address,
+            name,
+            None,
+            cfg::ClientInformation::new(3),
+            Arc::new(Language::new()),
+            None,
+            None,
+            PathBuf::new(),
+            false,
+            Wire::RadioProbe,
+        )
+    }
+
     /// `ClientHandshakePacketListenerImpl.handleHello`: LAN entries can continue
     /// after session authentication fails; the server still decides whether to admit them.
     /// Only for entries selected from LAN discovery, not addresses classified by IP.
@@ -140,7 +283,18 @@ impl Session {
         lang: Arc<Language>,
         resources: PathBuf,
     ) -> Self {
-        Self::start(address, name, auth, info, lang, None, None, resources, true)
+        Self::start(
+            address,
+            name,
+            auth,
+            info,
+            lang,
+            None,
+            None,
+            resources,
+            true,
+            Wire::Current,
+        )
     }
     /// `ConnectScreen.startConnecting` for a `transfer`: the cookies the
     /// server stored carry to the new connection (`TransferState`).
@@ -163,6 +317,7 @@ impl Session {
             Some(cookies),
             resources,
             false,
+            Wire::Current,
         )
     }
     /// Join an integrated server through memory (`Connection.connectToLocalServer`).
@@ -183,6 +338,7 @@ impl Session {
             None,
             resources,
             false,
+            Wire::Current,
         )
     }
     fn start(
@@ -195,6 +351,7 @@ impl Session {
         cookies: Option<Cookies>,
         resources: PathBuf,
         lan: bool,
+        wire: Wire,
     ) -> Self {
         let (send, events) = channel();
         let writer = Arc::new(Mutex::new(None));
@@ -229,6 +386,7 @@ impl Session {
                     transferred,
                     &resources,
                     lan,
+                    wire,
                 );
                 thread_far.cancel();
                 let from_server = result.is_ok();
@@ -246,6 +404,7 @@ impl Session {
         let debug = std::env::var_os("HORIZON_NET_DEBUG").is_some();
         Self {
             events,
+            wire,
             writer,
             configuring,
             thread,
@@ -283,7 +442,7 @@ impl Session {
             return;
         }
         if let Some(w) = writer.as_mut()
-            && w.send(&packet.encode()).is_err()
+            && self.wire.send_play(w, packet).is_err()
         {
             w.shutdown();
         }
@@ -322,13 +481,19 @@ impl Session {
     pub fn send_pack_status(&self, id: u128, action: i32) {
         let status = cfg::ResourcePackResponse { id, action };
         let mut writer = self.writer.lock().unwrap();
-        let body = if self.configuring.load(Ordering::Relaxed) {
-            cfg::Serverbound::ResourcePack(status).encode()
+        let (state, body) = if self.configuring.load(Ordering::Relaxed) {
+            (
+                State::Configuration,
+                cfg::Serverbound::ResourcePack(status).encode(),
+            )
         } else {
-            play::Serverbound::ResourcePack(status).encode()
+            (
+                State::Play,
+                play::Serverbound::ResourcePack(status).encode(),
+            )
         };
         if let Some(w) = writer.as_mut()
-            && w.send(&body).is_err()
+            && self.wire.send(w, state, &body).is_err()
         {
             w.shutdown();
         }
@@ -341,13 +506,19 @@ impl Session {
             payload,
         };
         let mut writer = self.writer.lock().unwrap();
-        let body = if self.configuring.load(Ordering::Relaxed) {
-            cfg::Serverbound::CustomClickAction(click).encode()
+        let (state, body) = if self.configuring.load(Ordering::Relaxed) {
+            (
+                State::Configuration,
+                cfg::Serverbound::CustomClickAction(click).encode(),
+            )
         } else {
-            play::Serverbound::CustomClickAction(click).encode()
+            (
+                State::Play,
+                play::Serverbound::CustomClickAction(click).encode(),
+            )
         };
         if let Some(w) = writer.as_mut()
-            && w.send(&body).is_err()
+            && self.wire.send(w, state, &body).is_err()
         {
             w.shutdown();
         }
@@ -356,7 +527,13 @@ impl Session {
     pub fn accept_code_of_conduct(&self) {
         let mut writer = self.writer.lock().unwrap();
         if let Some(w) = writer.as_mut()
-            && w.send(&cfg::Serverbound::AcceptCodeOfConduct(Empty).encode())
+            && self
+                .wire
+                .send(
+                    w,
+                    State::Configuration,
+                    &cfg::Serverbound::AcceptCodeOfConduct(Empty).encode(),
+                )
                 .is_err()
         {
             w.shutdown();
@@ -598,6 +775,7 @@ fn run(
     transferred: bool,
     resources: &Path,
     lan: bool,
+    wire: Wire,
 ) -> Result<Reason, Reason> {
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
@@ -627,7 +805,7 @@ fn run(
     let e = |e: horizon_protocol::Error| Reason::plain(connection_lost(e, lang));
     c.send(
         &handshake::Serverbound::Intention(handshake::Intention {
-            protocol: PROTOCOL_VERSION,
+            protocol: wire.version().protocol(),
             host: host.clone(),
             port,
             intent: if transferred {
@@ -651,6 +829,14 @@ fn run(
     .map_err(e)?;
     let profile = loop {
         let (id, payload) = c.recv().map_err(e)?;
+        if wire == Wire::RadioProbe && id == ids::login::clientbound::LOGIN_FINISHED {
+            let profile = radio_12111::decode_login_finished(&payload)
+                .map_err(e)?
+                .profile;
+            c.send(&login::Serverbound::LoginAcknowledged(Empty).encode())
+                .map_err(e)?;
+            break profile;
+        }
         match login::Clientbound::decode(id, &payload).map_err(e)? {
             login::Clientbound::Compression(p) => c.set_compression(p.threshold),
             login::Clientbound::LoginFinished(p) => {
@@ -660,6 +846,11 @@ fn run(
             }
             login::Clientbound::Disconnect(p) => {
                 return Ok(Reason::component(&p.reason_json, lang));
+            }
+            login::Clientbound::Hello(_) if wire == Wire::RadioProbe => {
+                return Err(Reason::plain(
+                    "The 1.21.11 probe requires an offline-mode server",
+                ));
             }
             login::Clientbound::Hello(hello) => {
                 status(send, &tr(lang, "connect.authorizing"));
@@ -735,9 +926,15 @@ fn run(
         }
     };
     status(send, &tr(lang, "connect.joining"));
-    c.send(&cfg::Serverbound::ClientInformation(info).encode())
-        .map_err(e)?;
-    c.send(
+    wire.send(
+        &mut c.writer,
+        State::Configuration,
+        &cfg::Serverbound::ClientInformation(info).encode(),
+    )
+    .map_err(e)?;
+    wire.send(
+        &mut c.writer,
+        State::Configuration,
         &cfg::Serverbound::CustomPayload(cfg::CustomPayload {
             channel: "minecraft:brand".into(),
             data: brand(),
@@ -755,6 +952,7 @@ fn run(
         send,
         cookies,
         resources,
+        wire,
     )? {
         Ok(registries) => registries,
         Err(kicked) => return Ok(kicked),
@@ -773,6 +971,7 @@ fn run(
         cookies,
         far,
         resources,
+        wire,
     )
 }
 
@@ -785,13 +984,18 @@ fn receive_play(
     cookies: &Cookies,
     far: &crate::lod_net::Inbox,
     resources: &Path,
+    wire: Wire,
 ) -> Result<Reason, Reason> {
     loop {
         let (id, payload) = reader
             .recv()
             .map_err(|e| Reason::plain(connection_lost(e, lang)))?;
-        let packet = match play::Clientbound::decode(id, &payload) {
-            Ok(p) => p,
+        let Some(id) = wire.version().clientbound_id(State::Play, id) else {
+            continue;
+        };
+        let packet = match wire.decode_play(id, &payload) {
+            Ok(Some(p)) => p,
+            Ok(None) => continue,
             Err(err) => {
                 let name = horizon_protocol::ids::name(
                     horizon_protocol::State::Play,
@@ -804,16 +1008,20 @@ fn receive_play(
             }
         };
         let reply = |p: play::Serverbound| {
-            shared_writer
-                .lock()
-                .unwrap()
+            let mut writer = shared_writer.lock().unwrap();
+            let writer = writer
                 .as_mut()
-                .ok_or_else(|| Reason::plain("Disconnected"))?
-                .send(&p.encode())
+                .ok_or_else(|| Reason::plain("Disconnected"))?;
+            wire.send_play(writer, p)
                 .map_err(|e| Reason::plain(connection_lost(e, lang)))
         };
         match packet {
-            play::Clientbound::KeepAlive(k) => reply(play::Serverbound::KeepAlive(k))?,
+            play::Clientbound::KeepAlive(k) => {
+                reply(play::Serverbound::KeepAlive(k.clone()))?;
+                if wire == Wire::RadioProbe {
+                    let _ = send.send(Event::Packet(Box::new(play::Clientbound::KeepAlive(k))));
+                }
+            }
             play::Clientbound::BundleDelimiter(_) => {}
             play::Clientbound::ResourcePackPush(p) => {
                 let _ = send.send(Event::PackPush(p));
@@ -828,8 +1036,12 @@ fn receive_play(
                     let w = writer
                         .as_mut()
                         .ok_or_else(|| Reason::plain("Disconnected"))?;
-                    w.send(&play::Serverbound::ConfigurationAcknowledged(Empty).encode())
-                        .map_err(|e| Reason::plain(connection_lost(e, lang)))?;
+                    wire.send(
+                        w,
+                        State::Play,
+                        &play::Serverbound::ConfigurationAcknowledged(Empty).encode(),
+                    )
+                    .map_err(|e| Reason::plain(connection_lost(e, lang)))?;
                     configuring.store(true, Ordering::Relaxed);
                 }
                 let registries = match configure(
@@ -840,6 +1052,7 @@ fn receive_play(
                     send,
                     cookies,
                     resources,
+                    wire,
                 )? {
                     Ok(registries) => registries,
                     Err(kicked) => return Ok(kicked),
@@ -898,13 +1111,14 @@ fn configure(
     send: &Sender<Event>,
     cookies: &Cookies,
     resources: &Path,
+    wire: Wire,
 ) -> Result<Result<Dynamic, Reason>, Reason> {
     let mut registries = Dynamic::default();
     let mut content_verified = false;
     let reply = |p: cfg::Serverbound| -> Result<(), Reason> {
         match writer.lock().unwrap().as_mut() {
-            Some(w) => w
-                .send(&p.encode())
+            Some(w) => wire
+                .send(w, State::Configuration, &p.encode())
                 .map_err(|e| Reason::plain(connection_lost(e, lang))),
             None => Err(Reason::plain("Disconnected")),
         }
@@ -913,6 +1127,9 @@ fn configure(
         let (id, payload) = reader
             .recv()
             .map_err(|e| Reason::plain(connection_lost(e, lang)))?;
+        let Some(id) = wire.version().clientbound_id(State::Configuration, id) else {
+            continue;
+        };
         match cfg::Clientbound::decode(id, &payload)
             .map_err(|e| Reason::plain(connection_lost(e, lang)))?
         {
@@ -994,8 +1211,12 @@ fn configure(
                 registries.custom_components = content_verified;
                 let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
                 let w = w.as_mut().ok_or_else(|| Reason::plain("Disconnected"))?;
-                w.send(&cfg::Serverbound::FinishConfiguration(Empty).encode())
-                    .map_err(|e| Reason::plain(connection_lost(e, lang)))?;
+                wire.send(
+                    w,
+                    State::Configuration,
+                    &cfg::Serverbound::FinishConfiguration(Empty).encode(),
+                )
+                .map_err(|e| Reason::plain(connection_lost(e, lang)))?;
                 configuring.store(false, Ordering::Relaxed);
                 return Ok(Ok(registries));
             }
@@ -1329,6 +1550,7 @@ mod tests {
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                Wire::Current,
             ));
         });
         let ended = result
@@ -1379,6 +1601,7 @@ mod tests {
                 &send,
                 &Cookies::default(),
                 &root,
+                Wire::Current,
             )
         });
         let mut server = Connection::local(server);
@@ -1439,6 +1662,7 @@ mod tests {
             });
             let mut session = Session {
                 events,
+                wire: Wire::Current,
                 writer: writer.clone(),
                 configuring: Arc::new(AtomicBool::new(false)),
                 thread: Some(thread),
@@ -1497,6 +1721,7 @@ mod tests {
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                Wire::Current,
             )
         });
         let mut server = Connection::local(server);
@@ -1544,6 +1769,7 @@ mod tests {
         let (send, events) = channel();
         let session = Session {
             events,
+            wire: Wire::Current,
             writer: Arc::new(Mutex::new(Some(writer))),
             configuring: Arc::new(AtomicBool::new(false)),
             thread: None,
@@ -1566,6 +1792,7 @@ mod tests {
                 &Cookies::default(),
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                Wire::Current,
             )
         });
         let mut server = Connection::local(server);
@@ -1628,6 +1855,7 @@ mod tests {
                 &thread_cookies,
                 &crate::lod_net::Inbox::default(),
                 Path::new("."),
+                Wire::Current,
             )
         });
         let mut server = Connection::local(server);

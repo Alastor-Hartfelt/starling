@@ -35,6 +35,19 @@ jobs:
         run: |
           cargo test --locked -p horizon-client-lib --lib net::tests::
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Join a vanilla 1.21.11 server with the headless probe
+        timeout-minutes: 10
+        run: |
+          cargo build --locked -p horizon-client-lib --example radio_12111_probe
+          jar="$RUNNER_TEMP/minecraft-server-1.21.11.jar"
+          curl --fail --silent --show-error --location --retry 3 --output "$jar" "https://piston-data.mojang.com/v1/objects/64bb6d763bed0a9f1d632ec347938594144943ed/server.jar"
+          echo "64bb6d763bed0a9f1d632ec347938594144943ed  $jar" | sha1sum --check
+          python3 tools/radio_12111_smoke.py "$jar" target/debug/examples/radio_12111_probe
+
   protocol-baseline:
     name: Check inherited Rust protocol crate
     runs-on: ubuntu-latest
@@ -49,15 +62,3 @@ jobs:
         run: cargo check --locked -p horizon-protocol
       - name: Test protocol codecs, framing and version adapters
         run: cargo test --locked -p horizon-protocol --lib
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Join a vanilla 1.21.11 server with the headless probe
-        timeout-minutes: 10
-        run: |
-          cargo build --locked -p horizon-protocol --example radio_12111_probe
-          jar="$RUNNER_TEMP/minecraft-server-1.21.11.jar"
-          curl --fail --silent --show-error --location --retry 3 --output "$jar" "https://piston-data.mojang.com/v1/objects/64bb6d763bed0a9f1d632ec347938594144943ed/server.jar"
-          echo "64bb6d763bed0a9f1d632ec347938594144943ed  $jar" | sha1sum --check
-          python3 tools/radio_12111_smoke.py "$jar" target/debug/examples/radio_12111_probe

@@ -135,6 +135,10 @@ name = "horizon-ctl"
 path = "../horizon-client/src/bin/horizon-ctl/main.rs"
 
 [[example]]
+name = "radio_12111_probe"
+path = "../horizon-client/examples/radio_12111_probe.rs"
+
+[[example]]
 name = "chunk_load_bench"
 path = "../horizon-client/examples/chunk_load_bench.rs"
 

@@ -38,7 +38,7 @@ jobs:
       - name: Build inherited game client and 1.21.11 probe
         run: |
           cargo build --locked --profile quick -p horizon-client --bin horizon-client
-          cargo build --locked --profile quick -p horizon-protocol --example radio_12111_probe
+          cargo build --locked --profile quick -p horizon-client-lib --example radio_12111_probe
           game_home=$(mktemp -d)
           HORIZON_HOME="$game_home/game" HORIZON_LAUNCHER_HOME="$game_home/launcher" XDG_DATA_HOME="$game_home/data" XDG_CONFIG_HOME="$game_home/config" HORIZON_NO_AUDIO=1 HORIZON_LAUNCHER_NO_SELF_UPDATE=1 target/quick/horizon-client --help
           tar -czf radio-linux-x86_64.tar.gz -C target/quick horizon-client examples/radio_12111_probe -C ../.. LICENSE THIRD_PARTY_NOTICES.md
