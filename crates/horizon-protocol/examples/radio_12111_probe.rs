@@ -9,8 +9,8 @@ use horizon_protocol::{
     ids,
     packets::{Empty, configuration as cfg, handshake, login, play},
     radio_12111::{
-        decode_chunk_sections, decode_level_chunk, decode_login_finished, decode_play_login,
-        encode_teleport_ack, handshake_packet,
+        SpawnInfo12111, decode_chunk_sections, decode_level_chunk, decode_login_finished,
+        decode_play_login, decode_respawn, encode_teleport_ack, handshake_packet,
     },
     registry::{Dynamic, ceil_log2},
     servers::parse_address,
@@ -123,22 +123,50 @@ fn configure(c: &mut Connection) -> ProbeResult<Dynamic> {
     }
 }
 
-fn play(c: &mut Connection, registries: &Dynamic) -> ProbeResult<()> {
+struct Level {
+    name: String,
+    sections: usize,
+    saw_chunk: bool,
+    teleported: bool,
+    ready: bool,
+}
+
+impl Level {
+    fn entered(spawn: SpawnInfo12111, registries: &Dynamic) -> ProbeResult<Self> {
+        if registries
+            .name("minecraft:dimension_type", spawn.dimension_type)
+            .is_none()
+        {
+            return Err("spawn names an unsynchronized dimension type".into());
+        }
+        Ok(Self {
+            name: spawn.dimension,
+            sections: registries.dimension(spawn.dimension_type).sections(),
+            saw_chunk: false,
+            teleported: false,
+            ready: false,
+        })
+    }
+}
+
+fn play(c: &mut Connection, registries: &Dynamic, require_nether: bool) -> ProbeResult<()> {
     use ids::play::clientbound as id;
 
     let state = State::Play;
-    let deadline = Instant::now() + Duration::from_secs(40);
+    let deadline = Instant::now() + Duration::from_secs(if require_nether { 60 } else { 40 });
     c.reader.set_read_timeout(Some(Duration::from_millis(50)))?;
-    let mut dimension = None;
+    let mut level: Option<Level> = None;
+    let mut position = [0.0; 3];
+    let (mut yaw, mut pitch) = (0.0, 0.0);
+    let mut nether_ready = false;
     let biome_bits = ceil_log2(registries.len("minecraft:worldgen/biome"));
     let mut chunks = 0;
-    let mut teleported = false;
     let mut batches = 0;
     let mut keepalives = 0;
     let mut next_tick = Instant::now();
     while Instant::now() < deadline {
         let now = Instant::now();
-        if teleported && now >= next_tick {
+        if level.as_ref().is_some_and(|level| level.teleported) && now >= next_tick {
             send(c, state, &play::Serverbound::ClientTickEnd(Empty).encode())?;
             next_tick = now + Duration::from_millis(50);
         }
@@ -157,25 +185,42 @@ fn play(c: &mut Connection, registries: &Dynamic) -> ProbeResult<()> {
                     "entered play as entity {} in {}",
                     login.player_id, login.spawn.dimension
                 );
-                if registries
-                    .name("minecraft:dimension_type", login.spawn.dimension_type)
-                    .is_none()
-                {
-                    return Err("Play Login names an unsynchronized dimension type".into());
-                }
-                dimension = Some(registries.dimension(login.spawn.dimension_type));
+                level = Some(Level::entered(login.spawn, registries)?);
+            }
+            id::RESPAWN => {
+                level = Some(Level::entered(decode_respawn(&body)?.spawn, registries)?);
             }
             id::PLAYER_POSITION => {
                 let play::Clientbound::PlayerPosition(p) = play::Clientbound::decode(id, &body)?
                 else {
                     unreachable!();
                 };
-                // This smoke test exercises a vanilla server's absolute initial teleport.
-                if p.relatives != 0 {
-                    return Err("probe received a relative teleport".into());
+                use play::relative;
+                for (i, flag) in [relative::X, relative::Y, relative::Z]
+                    .into_iter()
+                    .enumerate()
+                {
+                    position[i] = p.position[i]
+                        + if p.relatives & flag != 0 {
+                            position[i]
+                        } else {
+                            0.0
+                        };
                 }
+                yaw = p.yaw
+                    + if p.relatives & relative::Y_ROT != 0 {
+                        yaw
+                    } else {
+                        0.0
+                    };
+                pitch = p.pitch
+                    + if p.relatives & relative::X_ROT != 0 {
+                        pitch
+                    } else {
+                        0.0
+                    };
                 c.send(&encode_teleport_ack(p.teleport))?;
-                let [x, y, z] = p.position;
+                let [x, y, z] = position;
                 send(
                     c,
                     state,
@@ -183,25 +228,23 @@ fn play(c: &mut Connection, registries: &Dynamic) -> ProbeResult<()> {
                         x,
                         y,
                         z,
-                        yaw: p.yaw,
-                        pitch: p.pitch,
+                        yaw,
+                        pitch,
                         flags: 0,
                     })
                     .encode(),
                 )?;
-                if !teleported {
-                    send(c, state, &play::Serverbound::PlayerLoaded(Empty).encode())?;
-                    teleported = true;
-                }
+                level
+                    .as_mut()
+                    .ok_or("teleport received before Play Login")?
+                    .teleported = true;
             }
             id::LEVEL_CHUNK_WITH_LIGHT => {
                 let p = decode_level_chunk(&body)?;
-                let section_count = dimension
-                    .as_ref()
-                    .ok_or("chunk received before Play Login")?
-                    .sections();
-                decode_chunk_sections(&p.chunk.buffer, section_count, biome_bits)
-                    .map_err(|e| format!("chunk ({}, {}): {e}", p.x, p.z))?;
+                let level = level.as_mut().ok_or("chunk received before Play Login")?;
+                decode_chunk_sections(&p.chunk.buffer, level.sections, biome_bits)
+                    .map_err(|e| format!("chunk ({}, {}) in {}: {e}", p.x, p.z, level.name))?;
+                level.saw_chunk = true;
                 chunks += 1;
             }
             id::CHUNK_BATCH_FINISHED => {
@@ -215,6 +258,16 @@ fn play(c: &mut Connection, registries: &Dynamic) -> ProbeResult<()> {
                     .encode(),
                 )?;
                 batches += 1;
+                if let Some(level) = level.as_mut()
+                    && level.teleported
+                    && level.saw_chunk
+                    && !level.ready
+                {
+                    send(c, state, &play::Serverbound::PlayerLoaded(Empty).encode())?;
+                    level.ready = true;
+                    nether_ready |= level.name == "minecraft:the_nether";
+                    println!("ready in {}", level.name);
+                }
             }
             id::KEEP_ALIVE => {
                 let mut r = Reader::new(&body);
@@ -233,18 +286,27 @@ fn play(c: &mut Connection, registries: &Dynamic) -> ProbeResult<()> {
             }
             _ => {}
         }
-        if dimension.is_some() && teleported && chunks > 0 && batches > 0 && keepalives >= 2 {
+        if level.as_ref().is_some_and(|level| level.ready)
+            && (!require_nether || nether_ready)
+            && keepalives >= 2
+        {
             println!(
                 "1.21.11 join passed ({chunks} decoded chunks, {batches} batches, {keepalives} keepalives)"
             );
             return Ok(());
         }
     }
-    Err(format!("join incomplete: teleported={teleported}, chunks={chunks}, batches={batches}, keepalives={keepalives}").into())
+    Err(format!("probe incomplete: nether_ready={nether_ready}, chunks={chunks}, batches={batches}, keepalives={keepalives}").into())
 }
 
 fn main() -> ProbeResult<()> {
-    let address = std::env::args().nth(1).ok_or("expected host:port")?;
+    let mut args = std::env::args().skip(1);
+    let address = args.next().ok_or("expected host:port [--require-nether]")?;
+    let require_nether = match args.next().as_deref() {
+        None => false,
+        Some("--require-nether") => true,
+        Some(_) => return Err("expected --require-nether".into()),
+    };
     let (host, port) = parse_address(&address).ok_or("invalid server address")?;
     let mut c = Connection::connect(&host, port, IO_TIMEOUT)?;
     c.reader.set_read_timeout(Some(IO_TIMEOUT))?;
@@ -252,5 +314,5 @@ fn main() -> ProbeResult<()> {
     println!("login profile accepted");
     let registries = configure(&mut c).map_err(|e| format!("configuration: {e}"))?;
     println!("configuration complete");
-    play(&mut c, &registries).map_err(|e| format!("play: {e}").into())
+    play(&mut c, &registries, require_nether).map_err(|e| format!("play: {e}").into())
 }

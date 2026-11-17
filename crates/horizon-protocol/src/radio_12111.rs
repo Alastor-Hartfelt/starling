@@ -99,6 +99,26 @@ pub fn decode_play_login(payload: &[u8]) -> Result<PlayLogin12111> {
     Ok(login)
 }
 
+packet!(
+    /// Play Respawn uses the same byte game-mode encoding as Play Login.
+    Respawn12111 {
+        spawn: SpawnInfo12111 => SpawnInfo12111,
+        keep: i8 => Byte,
+    }
+);
+
+/// Decode the Play Respawn payload after removing its packet ID.
+pub fn decode_respawn(payload: &[u8]) -> Result<Respawn12111> {
+    let mut r = Reader::new(payload);
+    let packet = Respawn12111::read(&mut r)?;
+    if r.remaining() != 0 {
+        return Err(crate::Error::new(
+            "unexpected trailing bytes in 1.21.11 Play Respawn",
+        ));
+    }
+    Ok(packet)
+}
+
 /// Decode a 1.21.11 Level Chunk With Light payload after removing its packet ID.
 pub fn decode_level_chunk(payload: &[u8]) -> Result<play::LevelChunkWithLight> {
     let mut r = Reader::new(payload);

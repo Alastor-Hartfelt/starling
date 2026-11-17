@@ -9,6 +9,29 @@ import time
 from pathlib import Path
 
 
+def run_probe(probe, address, server, log):
+    with log.open("w") as out, subprocess.Popen(
+        [probe, address, "--require-nether"], stdout=out, stderr=subprocess.STDOUT
+    ) as client:
+        crossed = False
+        deadline = time.monotonic() + 85
+        try:
+            while client.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("headless probe timed out")
+                if not crossed and "ready in minecraft:overworld" in log.read_text(errors="replace"):
+                    server.stdin.write(b"execute in minecraft:the_nether run teleport RadioProbe 0 128 0\n")
+                    server.stdin.flush()
+                    crossed = True
+                time.sleep(0.25)
+            if client.returncode:
+                raise RuntimeError(f"headless probe failed (exit {client.returncode})")
+        finally:
+            if client.poll() is None:
+                client.kill()
+            print(log.read_text(errors="replace"), end="")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("server_jar", type=Path, help="Mojang's Minecraft 1.21.11 server jar")
@@ -48,8 +71,8 @@ def main():
                     if server.poll() is not None or time.monotonic() >= deadline:
                         raise RuntimeError("vanilla server did not finish starting")
                     time.sleep(0.5)
-                subprocess.run([probe, f"127.0.0.1:{port}"], check=True, timeout=75)
-            except (RuntimeError, subprocess.SubprocessError):
+                run_probe(probe, f"127.0.0.1:{port}", server, root / "probe.log")
+            except (OSError, RuntimeError, subprocess.SubprocessError):
                 print("\n".join(log.read_text(errors="replace").splitlines()[-60:]))
                 raise
             finally:
