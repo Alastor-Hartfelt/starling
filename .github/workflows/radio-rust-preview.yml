@@ -1,0 +1,75 @@
+name: Radio Client Rust previews
+
+on:
+  push:
+    branches: [radio-client-rust]
+    paths:
+      - '.github/workflows/radio-rust-preview.yml'
+      - 'Cargo.*'
+      - 'crates/**'
+      - 'packaging/android/**'
+      - 'third_party/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: radio-rust-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Linux x86-64 engine preview
+    if: github.ref == 'refs/heads/radio-client-rust'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev pkg-config
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: radio-engine-preview-linux
+      - name: Build inherited game client and 1.21.11 probe
+        run: |
+          cargo build --locked --profile quick -p horizon-client --bin horizon-client
+          cargo build --locked --profile quick -p horizon-protocol --example radio_12111_probe
+          tar -czf radio-linux-x86_64.tar.gz -C target/quick horizon-client examples/radio_12111_probe -C ../.. LICENSE THIRD_PARTY_NOTICES.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: radio-linux-x86_64-engine-preview
+          path: radio-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  android:
+    name: Android ARM64 engine preview
+    if: github.ref == 'refs/heads/radio-client-rust'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Install Android build tools
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0" "platforms;android-36" "ndk;28.2.13676358" > /dev/null
+          cargo install cargo-ndk --version 3.5.4 --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: radio-engine-preview-arm64
+      - name: Build preview APK with a debug key
+        run: python3 packaging/android/build_apk.py --abi arm64-v8a --profile quick --preview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: radio-android-arm64-engine-preview
+          path: target/android/starling-*.apk
+          if-no-files-found: error

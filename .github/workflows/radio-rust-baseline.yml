@@ -31,6 +31,9 @@ jobs:
           key: radio-rust-desktop
       - name: Check desktop client (inherited 26.3 baseline)
         run: cargo check --locked -p horizon-client
+      - name: Test multiplayer session and keepalive handling
+        run: |
+          cargo test --locked -p horizon-client-lib --lib net::tests::
 
   protocol-baseline:
     name: Check inherited Rust protocol crate
@@ -44,7 +47,17 @@ jobs:
           key: radio-rust-protocol
       - name: Check protocol crate (inherited 26.3 baseline, not a 1.21.11 verification)
         run: cargo check --locked -p horizon-protocol
-      - name: Test Radio target-version metadata
+      - name: Test protocol codecs, framing and version adapters
+        run: cargo test --locked -p horizon-protocol --lib
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Join a vanilla 1.21.11 server with the headless probe
+        timeout-minutes: 10
         run: |
-          cargo test --locked -p horizon-protocol radio_target::tests
-          cargo test --locked -p horizon-protocol radio_12111::tests
+          cargo build --locked -p horizon-protocol --example radio_12111_probe
+          jar="$RUNNER_TEMP/minecraft-server-1.21.11.jar"
+          curl --fail --silent --show-error --location --retry 3 --output "$jar" "https://piston-data.mojang.com/v1/objects/64bb6d763bed0a9f1d632ec347938594144943ed/server.jar"
+          echo "64bb6d763bed0a9f1d632ec347938594144943ed  $jar" | sha1sum --check
+          python3 tools/radio_12111_smoke.py "$jar" target/debug/examples/radio_12111_probe
