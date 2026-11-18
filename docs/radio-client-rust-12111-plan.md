@@ -25,7 +25,7 @@ HORIZON_VERSIONS=/path/to/radio-version-data python3 tools/version_port.py prepa
 
 This uses the launcher profile from [Mojang's 1.21.11 release notes](https://feedback.minecraft.net/hc/en-us/articles/41809981427213-Minecraft-Java-Edition-1-21-11-Mounts-of-Mayhem). The tool verifies the profile archive and both JARs, then generates reports and indexes the classes in a separate version directory.
 
-The existing resource exporters fail to compile against those JARs. The JDK 21 audit found 75 server-side errors and 26 client-side errors. Server-side blockers include changed world constructors, registry interfaces, and command APIs. Client-side blockers include changed model and multipart blockstate APIs. Validate exporter output against the Rust loader and test single-player world creation, saving, and reopening before changing the engine pin.
+The initial JDK 21 audit of the resource exporters against those JARs found 75 server-side errors and 26 client-side errors. Server-side blockers include changed world constructors, registry interfaces, and command APIs. Client-side blockers include changed model and multipart blockstate APIs. The mob-data and gameplay-facts exporters now compile and run against those JARs. Their 1.21.11 output covers all 29,671 block states and all 157 entity spawn placement entries. Validate the complete set of exporter outputs against the Rust loader and test single-player world creation, saving, and reopening before changing the engine pin.
 
 ## Reproduce the multiplayer tests
 

@@ -25,7 +25,6 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.SpawnPlacementTypes;
 import net.minecraft.world.entity.SpawnPlacements;
 import net.minecraft.world.level.BlockGetter;
@@ -61,6 +60,9 @@ public final class VanillaMobDataExporter {
         pathType.setAccessible(true);
         var out = new JsonArray();
         var empty = EmptyBlockGetter.INSTANCE;
+        var zombie = entityType("minecraft:zombie");
+        var ocelot = entityType("minecraft:ocelot");
+        var polarBear = entityType("minecraft:polar_bear");
         for (var state : Block.BLOCK_STATE_REGISTRY) {
             var level = new OneBlock(state);
             var type = (PathType) pathType.invoke(null, level, BlockPos.ZERO);
@@ -71,11 +73,11 @@ public final class VanillaMobDataExporter {
             if (state.isPathfindable(PathComputationType.LAND)) flags |= 1;
             if (state.isPathfindable(PathComputationType.WATER)) flags |= 2;
             if (state.isPathfindable(PathComputationType.AIR)) flags |= 4;
-            if (state.isValidSpawn(empty, BlockPos.ZERO, EntityTypes.ZOMBIE)) flags |= 8;
-            if (state.isValidSpawn(empty, BlockPos.ZERO, EntityTypes.OCELOT)) flags |= 16;
-            if (state.isValidSpawn(empty, BlockPos.ZERO, EntityTypes.POLAR_BEAR)) flags |= 32;
+            if (state.isValidSpawn(empty, BlockPos.ZERO, zombie)) flags |= 8;
+            if (state.isValidSpawn(empty, BlockPos.ZERO, ocelot)) flags |= 16;
+            if (state.isValidSpawn(empty, BlockPos.ZERO, polarBear)) flags |= 32;
             if (state.isRedstoneConductor(empty, BlockPos.ZERO)) flags |= 64;
-            if (net.minecraft.world.level.NaturalSpawner.isValidEmptySpawnBlock(level, BlockPos.ZERO, state, state.getFluidState(), EntityTypes.ZOMBIE)) flags |= 128;
+            if (net.minecraft.world.level.NaturalSpawner.isValidEmptySpawnBlock(level, BlockPos.ZERO, state, state.getFluidState(), zombie)) flags |= 128;
             if (state.isFaceSturdy(empty, BlockPos.ZERO, Direction.UP)) flags |= 256;
             if (state.isSolid()) flags |= 512;
             if (state.isSolidRender()) flags |= 1024;
@@ -84,6 +86,10 @@ public final class VanillaMobDataExporter {
             out.add(o);
         }
         return out;
+    }
+
+    private static EntityType<?> entityType(String id) {
+        return BuiltInRegistries.ENTITY_TYPE.get(Identifier.parse(id)).orElseThrow().value();
     }
 
     private static JsonObject placements() {

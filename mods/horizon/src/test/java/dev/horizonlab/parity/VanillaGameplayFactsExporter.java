@@ -2,6 +2,7 @@ package dev.horizonlab.parity;
 
 import com.google.gson.*;
 import com.mojang.serialization.JsonOps;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import net.minecraft.SharedConstants;
@@ -11,6 +12,7 @@ import net.minecraft.server.Bootstrap;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.shapes.BooleanOp;
 import net.minecraft.world.phys.shapes.Shapes;
 
@@ -26,15 +28,24 @@ public final class VanillaGameplayFactsExporter {
         return result;
     }
 
+    private static Method lightDampeningAccessor() throws NoSuchMethodException {
+        try {
+            return BlockState.class.getMethod("getLightDampening");
+        } catch (NoSuchMethodException absentOn12111) {
+            return BlockState.class.getMethod("getLightBlock");
+        }
+    }
+
     /** Writes each state as it is read: the whole file (56 MB) never sits in memory. */
-    private static void states(Gson gson, com.google.gson.stream.JsonWriter out) throws java.io.IOException {
+    private static void states(Gson gson, com.google.gson.stream.JsonWriter out) throws java.io.IOException, ReflectiveOperationException {
+        var lightDampening = lightDampeningAccessor();
         var level = EmptyBlockGetter.INSTANCE;
         for (var state : Block.BLOCK_STATE_REGISTRY) {
             var o = new JsonObject();
             var block = state.getBlock();
             o.addProperty("id", Block.getId(state));
             o.addProperty("emission", state.getLightEmission());
-            o.addProperty("dampening", state.getLightDampening());
+            o.addProperty("dampening", (Integer) lightDampening.invoke(state));
             o.addProperty("skylight_down", state.propagatesSkylightDown());
             o.addProperty("shape_occlusion", state.useShapeForLightOcclusion());
             o.addProperty("can_occlude", state.canOcclude());
