@@ -258,7 +258,9 @@ fn ping_all(servers: &[ServerEntry], pings: &Pings, icons: &Icons, file: &Path) 
                             }
                         }
                         // OnlineServerEntry: SUCCESSFUL only for this game's protocol.
-                        if protocol == i64::from(horizon_protocol::PROTOCOL_VERSION) {
+                        if protocol
+                            == i64::from(horizon_protocol::radio_target::TARGET_PROTOCOL_VERSION)
+                        {
                             Ping::Ok {
                                 motd,
                                 players,

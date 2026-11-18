@@ -1015,8 +1015,7 @@ impl Game<'_> {
         // A signed-in account always plays under its own name on servers (an online-mode one
         // takes no other); single player's own server, the name its world opened with
         // (integrated.rs: a name chosen in Skin Customization goes first).
-        let radio_12111 = self.options.radio_12111
-            && local.is_none()
+        let radio_12111 = local.is_none()
             && cookies.is_none()
             && !lan
             && !address.starts_with(horizon_client::net::FRIEND);

@@ -116,7 +116,7 @@ def run_engine(binary, resources, address, server, server_log, root, x11_focus=F
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("WAYLAND_SOCKET", None)
     args = [
-        binary, *display_args, "--radio-1.21.11", "--resources", resources,
+        binary, *display_args, "--resources", resources,
         "--game-dir", game, "--control-socket", endpoint, "--server", address,
         "--name", "RadioEngine", "--render-distance", "3",
     ]

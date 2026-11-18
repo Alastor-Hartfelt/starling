@@ -1421,7 +1421,7 @@ pub fn ping(address: &str, timeout: Duration) -> Result<(serde_json::Value, u128
     let e = |e: horizon_protocol::Error| e.to_string();
     c.send(
         &handshake::Serverbound::Intention(handshake::Intention {
-            protocol: PROTOCOL_VERSION,
+            protocol: horizon_protocol::radio_target::TARGET_PROTOCOL_VERSION,
             host: host.clone(),
             port,
             intent: handshake::STATUS,
@@ -1578,6 +1578,40 @@ mod tests {
             "Connecting to play.example.net, 25577"
         );
         assert_eq!(line("[::1]:25566"), "Connecting to ::1, 25566");
+    }
+
+    #[test]
+    fn server_list_status_uses_the_12111_protocol() {
+        use horizon_protocol::packets::status;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut connection = Connection::from_stream(stream).unwrap();
+            let (id, payload) = connection.recv().unwrap();
+            let packet = handshake::Serverbound::decode(id, &payload).unwrap();
+            let handshake::Serverbound::Intention(intent) = packet else {
+                panic!("expected a status handshake");
+            };
+            assert_eq!(intent.intent, handshake::STATUS);
+            assert_eq!(intent.protocol, 774);
+            connection.recv().unwrap();
+            let response = status::Clientbound::StatusResponse(status::StatusResponse {
+                json: r#"{"version":{"name":"1.21.11","protocol":774}}"#.into(),
+            });
+            connection.send(&response.encode()).unwrap();
+            connection.recv().unwrap();
+            connection
+                .send(&status::Clientbound::PongResponse(status::Ping { time: 1 }).encode())
+                .unwrap();
+        });
+        let (json, _) = ping(&address, Duration::from_secs(5)).unwrap();
+        server.join().unwrap();
+        assert_eq!(json["version"]["protocol"], 774);
     }
 
     #[test]
