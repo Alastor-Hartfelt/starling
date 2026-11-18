@@ -52,6 +52,13 @@ except ImportError:
     import vanilla_map
 
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
+# Mojang published this launcher profile alongside 1.21.11. The profile's
+# downloads refer to the official jars with readable class and member names.
+UNOBFUSCATED_12111 = {
+    "id": "1.21.11_unobfuscated",
+    "archive_sha1": "82332dfb17146de34cb7a36d2b910e3b2009191a",
+    "profile": "1_21_11_unobfuscated/1_21_11_unobfuscated/1_21_11_unobfuscated.json",
+}
 STORE = Path(os.environ.get("HORIZON_VERSIONS", Path.home() / "code" / "horizon-parity" / "versions"))
 PORTS = Path(os.environ.get("HORIZON_PORTS", STORE.parent / "ports"))
 STATES = ["handshake", "status", "login", "configuration", "play"]
@@ -203,6 +210,21 @@ def prepare_pinned(version, directory):
 
 
 def download_version_manifest(version, directory):
+    if version == UNOBFUSCATED_12111["id"]:
+        checksum = UNOBFUSCATED_12111["archive_sha1"]
+        launcher_profile = lab.download(
+            f"https://piston-data.mojang.com/v1/objects/{checksum}/1_21_11_unobfuscated.zip",
+            directory / "launcher-profile.zip",
+            checksum,
+        )
+        with zipfile.ZipFile(launcher_profile) as archive:
+            data = archive.read(UNOBFUSCATED_12111["profile"])
+        meta = json.loads(data)
+        if meta["id"] != version:
+            raise ValueError(f"Unexpected launcher profile ID {meta['id']}")
+        version_json = directory / "version.json"
+        version_json.write_bytes(data)
+        return version_json, meta
     manifest = json.loads(fetch_json(MANIFEST_URL))
     entry = next((v for v in manifest["versions"] if v["id"] == version), None)
     if entry is None:

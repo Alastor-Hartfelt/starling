@@ -17,7 +17,15 @@ Generate the target reports in a separate development directory with Java 21 or 
 HORIZON_VERSIONS=/path/to/radio-version-data python3 tools/version_port.py prepare 1.21.11 --reports-only
 ```
 
-The command verifies Mojang's manifest and server jar and writes reports under `1.21.11/datagen/reports`. The current resource-preparation pipeline still compiles Java exporters against 26.3. To switch versions, make those exporters work with the 1.21.11 mappings, validate the resulting resources against the Rust loader, then exercise single-player world creation, saving, and reopening before changing the engine pin.
+The command verifies Mojang's manifest and server jar and writes reports under `1.21.11/datagen/reports`. For class and API comparisons, prepare Mojang's official unobfuscated client and server with JDK 21 or newer.
+
+```sh
+HORIZON_VERSIONS=/path/to/radio-version-data python3 tools/version_port.py prepare 1.21.11_unobfuscated --download
+```
+
+This uses the launcher profile from [Mojang's 1.21.11 release notes](https://feedback.minecraft.net/hc/en-us/articles/41809981427213-Minecraft-Java-Edition-1-21-11-Mounts-of-Mayhem). The tool verifies the profile archive and both JARs, then generates reports and indexes the classes in a separate version directory.
+
+The existing resource exporters fail to compile against those JARs. The JDK 21 audit found 75 server-side errors and 26 client-side errors. Server-side blockers include changed world constructors, registry interfaces, and command APIs. Client-side blockers include changed model and multipart blockstate APIs. Validate exporter output against the Rust loader and test single-player world creation, saving, and reopening before changing the engine pin.
 
 ## Reproduce the multiplayer tests
 
