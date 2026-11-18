@@ -179,6 +179,7 @@ def run_datagen(server, reports, major):
             raise SystemExit(f"The data generator failed:\n{log.read_text()[-3000:]}")
         if reports.exists():
             shutil.rmtree(reports)
+        reports.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(out / "reports"), reports)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -201,7 +202,7 @@ def prepare_pinned(version, directory):
     return {key: path.resolve() for key, path in found.items()}
 
 
-def prepare_download(version, directory):
+def download_version_manifest(version, directory):
     manifest = json.loads(fetch_json(MANIFEST_URL))
     entry = next((v for v in manifest["versions"] if v["id"] == version), None)
     if entry is None:
@@ -209,7 +210,11 @@ def prepare_download(version, directory):
     version_json = directory / "version.json"
     if not (version_json.exists() and lab.digest(version_json, "sha1") == entry["sha1"]):
         version_json.write_bytes(fetch_json(entry["url"], entry["sha1"]))
-    meta = json.loads(version_json.read_text())
+    return version_json, json.loads(version_json.read_text())
+
+
+def prepare_download(version, directory):
+    version_json, meta = download_version_manifest(version, directory)
     if "client_mappings" in meta["downloads"]:
         raise SystemExit(f"{version} is obfuscated; the pipeline handles unobfuscated releases (26.1 and later)")
     jars = directory / "jars"
@@ -226,10 +231,25 @@ def prepare_download(version, directory):
     return found
 
 
+def prepare_reports(version, directory):
+    # The dedicated server can export its own reports even when its classes
+    # still need mappings for Horizon's Java exporters and class comparisons.
+    _, meta = download_version_manifest(version, directory)
+    download = meta["downloads"]["server"]
+    server = lab.download(download["url"], directory / "jars" / "server.jar", download["sha1"])
+    reports = directory / "datagen" / "reports"
+    if not reports.exists():
+        run_datagen(server, reports, meta["javaVersion"]["majorVersion"])
+    print(reports)
+    return 0
+
+
 def prepare(args):
     version = safe_version(args.version)
     directory = version_dir(version)
     directory.mkdir(parents=True, exist_ok=True)
+    if getattr(args, "reports_only", False):
+        return prepare_reports(version, directory)
     found = (prepare_pinned if version == pinned() and not args.download else prepare_download)(version, directory)
     facts = jar_facts(found["client"])
     if facts["id"] != version:
@@ -698,6 +718,8 @@ def main():
     command = commands.add_parser("prepare", help="download, verify and run the data generator")
     command.add_argument("version")
     command.add_argument("--download", action="store_true", help="download even the pinned version")
+    command.add_argument("--reports-only", action="store_true",
+                         help="generate server reports without requiring unobfuscated classes")
     command.add_argument("-j", "--jobs", type=int, default=int(os.environ.get("FLEET_LOAD_JOBS", 0)) or None,
                          help="class indexing processes (default: $FLEET_LOAD_JOBS, else the CPU count)")
     command = commands.add_parser("diff", help="diff two prepared versions")

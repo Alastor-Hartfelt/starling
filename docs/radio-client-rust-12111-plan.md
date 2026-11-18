@@ -9,6 +9,16 @@ The branch has an experimental Minecraft 1.21.11 multiplayer session using prepa
 - Prioritize low-end Android graphics compatibility, input and memory use.
 - Retain upstream MIT license and copyright notices. Obtain Minecraft assets through legitimate user-owned game files.
 
+## Replace the 26.3 resource and engine dependencies
+
+Generate the target reports in a separate development directory with Java 21 or newer.
+
+```sh
+HORIZON_VERSIONS=/path/to/radio-version-data python3 tools/version_port.py prepare 1.21.11 --reports-only
+```
+
+The command verifies Mojang's manifest and server jar and writes reports under `1.21.11/datagen/reports`. The current resource-preparation pipeline still compiles Java exporters against 26.3. To switch versions, make those exporters work with the 1.21.11 mappings, validate the resulting resources against the Rust loader, then exercise single-player world creation, saving, and reopening before changing the engine pin.
+
 ## Reproduce the multiplayer tests
 
 Use Rust stable, Python 3, Java 21 or newer, and the Mojang 1.21.11 server jar. The baseline workflow downloads the jar and verifies its SHA-1. The full client also needs prepared 26.3 resources. Follow the source build instructions in the [README](../README.md) to prepare them with JDK 25.
