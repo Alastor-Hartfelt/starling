@@ -2,6 +2,8 @@ package dev.horizonlab.parity;
 
 import java.lang.reflect.Field;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.*;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -15,6 +17,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.packs.PackType;
 import net.minecraft.server.packs.repository.ServerPacksSource;
 import net.minecraft.server.packs.resources.MultiPackResourceManager;
+import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.tags.TagLoader;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -42,15 +45,11 @@ public final class ParityData {
         var resources = new MultiPackResourceManager(PackType.SERVER_DATA, repo.openAllSelected());
         var layers = RegistryLayer.createRegistryAccess();
         var staticTags = TagLoader.loadTagsForExistingRegistries(resources, layers.getLayer(RegistryLayer.STATIC));
-        var context = TagLoader.buildUpdatedLookups(layers.getAccessForLoading(RegistryLayer.WORLD), staticTags);
-        RegistryAccess.Frozen world = RegistryDataLoader.load(resources, context, RegistryDataLoader.WORLD_REGISTRIES, Runnable::run).join();
-        var worldLayers = layers.replaceFrom(RegistryLayer.WORLD, world);
+        var worldLayers = loadWorldRegistries(resources, layers, staticTags);
         var loaded = ReloadableServerRegistries.reload(worldLayers, staticTags, resources, Runnable::run).join();
         loot = new ReloadableServerRegistries.Holder(loaded.lookupWithUpdatedTags());
         lookup = loaded.lookupWithUpdatedTags();
-        var components = BuiltInRegistries.DATA_COMPONENT_INITIALIZERS.build(lookup);
-        staticTags.forEach(Registry.PendingTags::apply);
-        components.forEach(net.minecraft.core.component.DataComponentInitializers.PendingComponents::apply);
+        applyStaticData(staticTags);
         access = loaded.layers().compositeAccess();
         ops = RegistryOps.create(NbtOps.INSTANCE, lookup);
         var unsafeField = Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe");
@@ -61,6 +60,62 @@ public final class ParityData {
         registryAccess.setAccessible(true);
         long offset = (long) unsafe.getClass().getMethod("objectFieldOffset", Field.class).invoke(unsafe, registryAccess);
         unsafe.getClass().getMethod("putObject", Object.class, long.class, Object.class).invoke(unsafe, level, offset, access);
+    }
+
+    private static LayeredRegistryAccess<RegistryLayer> loadWorldRegistries(
+            ResourceManager resources, LayeredRegistryAccess<RegistryLayer> layers,
+            List<Registry.PendingTags<?>> staticTags) throws ReflectiveOperationException {
+        java.lang.reflect.Method load;
+        try {
+            load = RegistryDataLoader.class.getMethod(
+                "load", ResourceManager.class, List.class, List.class, Executor.class);
+        } catch (NoSuchMethodException absentOn12111) {
+            return loadLegacyWorldRegistries(resources, layers, staticTags);
+        }
+        var layer = RegistryLayer.valueOf("WORLD");
+        var context = TagLoader.buildUpdatedLookups(layers.getAccessForLoading(layer), staticTags);
+        var worldRegistries = RegistryDataLoader.class.getField("WORLD_REGISTRIES").get(null);
+        Executor direct = Runnable::run;
+        var world = (RegistryAccess.Frozen) ((CompletableFuture<?>) load.invoke(
+            null, resources, context, worldRegistries, direct)).join();
+        return layers.replaceFrom(layer, world);
+    }
+
+    private static LayeredRegistryAccess<RegistryLayer> loadLegacyWorldRegistries(
+            ResourceManager resources, LayeredRegistryAccess<RegistryLayer> layers,
+            List<Registry.PendingTags<?>> staticTags) throws ReflectiveOperationException {
+        var load = RegistryDataLoader.class.getMethod("load", ResourceManager.class, List.class, List.class);
+        var worldgen = RegistryLayer.valueOf("WORLDGEN");
+        var context = TagLoader.buildUpdatedLookups(layers.getAccessForLoading(worldgen), staticTags);
+        var worldgenRegistries = RegistryDataLoader.class.getField("WORLDGEN_REGISTRIES").get(null);
+        var world = (RegistryAccess.Frozen) load.invoke(null, resources, context, worldgenRegistries);
+        layers = layers.replaceFrom(worldgen, world);
+
+        var dimensions = RegistryLayer.DIMENSIONS;
+        context = TagLoader.buildUpdatedLookups(layers.getAccessForLoading(dimensions), staticTags);
+        var dimensionRegistries = RegistryDataLoader.class.getField("DIMENSION_REGISTRIES").get(null);
+        var dimensionData = (RegistryAccess.Frozen) load.invoke(null, resources, context, dimensionRegistries);
+        return layers.replaceFrom(dimensions, dimensionData);
+    }
+
+    private static void applyStaticData(List<Registry.PendingTags<?>> staticTags)
+            throws ReflectiveOperationException {
+        Object initializers;
+        try {
+            initializers = BuiltInRegistries.class.getField("DATA_COMPONENT_INITIALIZERS").get(null);
+        } catch (NoSuchFieldException absentOn12111) {
+            // 1.21.11 already has its default components bound at bootstrap.
+            staticTags.forEach(Registry.PendingTags::apply);
+            return;
+        }
+        var build = initializers.getClass().getMethod("build", HolderLookup.Provider.class);
+        var components = (List<?>) build.invoke(initializers, lookup);
+        var apply = Class.forName("net.minecraft.core.component.DataComponentInitializers$PendingComponents")
+            .getMethod("apply");
+        staticTags.forEach(Registry.PendingTags::apply);
+        for (var component : components) {
+            apply.invoke(component);
+        }
     }
 
     /** "-" is the empty stack; otherwise ItemStack.CODEC over SNBT. */

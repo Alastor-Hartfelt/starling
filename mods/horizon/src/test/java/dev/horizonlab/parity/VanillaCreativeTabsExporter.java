@@ -83,7 +83,8 @@ public final class VanillaCreativeTabsExporter {
                 var tags = new JsonArray();
                 for (ItemStack stack : tab.getDisplayItems()) {
                     lines.add(strings(tooltipLines(stack, context, flag)));
-                    tags.add(strings(stack.tags().map(t -> t.location().toString()).toList()));
+                    tags.add(strings(BuiltInRegistries.ITEM.wrapAsHolder(stack.getItem()).tags()
+                        .map(t -> t.location().toString()).toList()));
                 }
                 o.add("lines", lines);
                 o.add("tags", tags);
