@@ -1,6 +1,6 @@
 # Radio Client Rust — Minecraft Java 1.21.11 port
 
-The branch has an experimental offline-mode Minecraft 1.21.11 multiplayer session using prepared 26.3 engine resources. The Linux engine has been tested against a local vanilla 1.21.11 server. GitHub Actions builds Linux x86-64 and Android ARM64 previews.
+The branch has an experimental Minecraft 1.21.11 multiplayer session using prepared 26.3 engine resources. The Linux engine has been tested against a local vanilla 1.21.11 server. GitHub Actions builds Linux x86-64 and Android ARM64 previews.
 
 ## Goals
 - Shared native Rust client for Android ARM64 and desktop (Windows/Linux; macOS later).
@@ -27,7 +27,7 @@ The probe and engine run against a fresh local server with an isolated world and
 
 To repeat the desktop focus regression, run the full engine command with `--x11-focus` on a dedicated X11 display with `xwininfo`, libX11, and working Vulkan. The test moves input focus away while the game is still visible, then unmaps the window for 35 seconds. It verifies server traffic during both stages and restores the window. The graphical run also verifies a chest shift-click transfer on the server. Xvfb and Mesa lavapipe work for this check.
 
-For a direct desktop test, start the client with `--radio-1.21.11 --server HOST[:PORT] --name NAME --resources PATH`. Use an offline-mode 1.21.11 server.
+For a direct desktop test, start the client with `--radio-1.21.11 --server HOST[:PORT] --name NAME --resources PATH`. An offline-mode 1.21.11 server reproduces the tested setup. The session uses the shared encrypted login path and accepts the launcher account. The encryption and compression handshake has a loopback test. Microsoft authentication still needs a live test.
 
 ## Android ARM64 device test
 
@@ -46,7 +46,7 @@ After the server records the join, press Home for at least 35 seconds, return fr
 
 1. Expand the 1.21.11 item component codec beyond the basic supported types, and finish creative inventory. Exercise 1.21.11 enchanted items, crafting, and other menus against vanilla.
 2. Decode entity metadata and equipment, add player info, and test two clients tracking each other.
-3. Finish player chat, command suggestions and signed commands, and 1.21.11 online-mode login. Exercise the shared encrypted session against an authenticated test server once implemented.
+3. Exercise the shared login path against a Minecraft 1.21.11 server with online mode enabled and a signed-in Microsoft account. Add player chat, command suggestions, and signed commands.
 4. Test Android backgrounding on hardware and profile frame time, memory, and thermals before choosing device-specific optimizations.
 
 ## Guardrails

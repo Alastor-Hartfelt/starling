@@ -1020,7 +1020,7 @@ impl Game<'_> {
             && cookies.is_none()
             && !lan
             && !address.starts_with(horizon_client::net::FRIEND);
-        let auth = if radio_12111 { None } else { self.auth() };
+        let auth = self.auth();
         let name = match (&auth, &local) {
             (Some(a), None) => a.name.as_str(),
             _ => name,
@@ -1042,6 +1042,7 @@ impl Game<'_> {
             None if radio_12111 => Session::connect_radio_12111(
                 address,
                 name,
+                auth.clone(),
                 info.clone(),
                 lang.clone(),
                 root.clone(),

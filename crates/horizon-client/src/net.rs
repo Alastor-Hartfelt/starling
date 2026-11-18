@@ -354,10 +354,11 @@ impl Session {
             Wire::Current,
         )
     }
-    /// Experimental offline-mode 1.21.11 terrain session.
+    /// Experimental 1.21.11 session, optionally using the launcher account.
     pub fn connect_radio_12111(
         address: &str,
         name: &str,
+        auth: Option<Arc<AuthSession>>,
         info: cfg::ClientInformation,
         lang: Arc<Language>,
         resources: PathBuf,
@@ -365,7 +366,7 @@ impl Session {
         Self::start(
             address,
             name,
-            None,
+            auth,
             info,
             lang,
             None,
@@ -955,11 +956,6 @@ fn run(
             }
             login::Clientbound::Disconnect(p) => {
                 return Ok(Reason::component(&p.reason_json, lang));
-            }
-            login::Clientbound::Hello(_) if wire == Wire::Radio12111 => {
-                return Err(Reason::plain(
-                    "The experimental 1.21.11 session requires an offline-mode server",
-                ));
             }
             login::Clientbound::Hello(hello) => {
                 status(send, &tr(lang, "connect.authorizing"));
@@ -2053,6 +2049,88 @@ mod tests {
         receive_brand(&payload, &send);
         assert!(events.try_recv().is_err());
     }
+    #[test]
+    fn radio_login_handles_an_encrypted_server_challenge() {
+        use horizon_protocol::buf::{Codec, Writer};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(25)))
+                .unwrap();
+            let mut server = Connection::from_stream(stream).unwrap();
+            let (id, payload) = server.recv().unwrap();
+            let handshake::Serverbound::Intention(intention) =
+                handshake::Serverbound::decode(id, &payload).unwrap()
+            else {
+                panic!("expected the 1.21.11 handshake");
+            };
+            assert_eq!(intention.protocol, 774);
+            let (id, payload) = server.recv().unwrap();
+            let login::Serverbound::Hello(hello) =
+                login::Serverbound::decode(id, &payload).unwrap()
+            else {
+                panic!("expected the 1.21.11 login hello");
+            };
+            let key = horizon_protocol::rsa::RsaPrivateKey::generate(1024).unwrap();
+            let challenge = vec![10, 29, 87, 43];
+            server
+                .send(
+                    &login::Clientbound::Hello(login::Hello {
+                        server_id: String::new(),
+                        public_key: key.public_der(),
+                        challenge: challenge.clone(),
+                        should_authenticate: false,
+                    })
+                    .encode(),
+                )
+                .unwrap();
+
+            let (id, payload) = server.recv().unwrap();
+            let login::Serverbound::Key(reply) = login::Serverbound::decode(id, &payload).unwrap()
+            else {
+                panic!("expected the 1.21.11 encryption reply");
+            };
+            assert_eq!(key.decrypt(&reply.challenge).unwrap(), challenge);
+            let secret: [u8; 16] = key.decrypt(&reply.key).unwrap().try_into().unwrap();
+            server.enable_encryption(&secret);
+            server
+                .send(
+                    &login::Clientbound::Compression(login::Compression { threshold: 1 }).encode(),
+                )
+                .unwrap();
+            server.set_compression(1);
+            let mut finished = Writer::new();
+            finished.varint(ids::login::clientbound::LOGIN_FINISHED);
+            login::GameProfile::write(
+                &login::GameProfile {
+                    uuid: hello.uuid,
+                    name: hello.name,
+                    properties: Vec::new(),
+                },
+                &mut finished,
+            );
+            server.send(&finished.data).unwrap();
+            let (id, payload) = server.recv().unwrap();
+            assert!(matches!(
+                login::Serverbound::decode(id, &payload).unwrap(),
+                login::Serverbound::LoginAcknowledged(_)
+            ));
+        });
+        let session = Session::connect_radio_12111(
+            &address.to_string(),
+            "RadioFixture",
+            None,
+            cfg::ClientInformation::new(3),
+            Arc::new(Language::new()),
+            PathBuf::new(),
+        );
+        worker.join().unwrap();
+        drop(session);
+    }
+
     /// No account never joins; the signed-in rule is compared with the real
     /// client login listener by test_lan_auth_parity.py.
     #[test]
