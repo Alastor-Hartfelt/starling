@@ -23,7 +23,7 @@ python3 tools/radio_12111_smoke.py "$SERVER_JAR" target/debug/horizon-client \
   --engine-resources .local/horizon-client/26.3
 ```
 
-The probe and engine run against a fresh local server with an isolated world and player data. The engine test verifies initial terrain, light, sign text and system messages, authoritative movement, block breaking and placement, hotbar updates, enchanted items in chests, unsigned commands, mob tracking, and a dimension change on the same connection.
+The probe and engine run against a fresh local server with an isolated world and player data. The headless test checks that both clients receive the other player’s roster entry, that one can enter the Nether, and that the other receives roster removal when the first disconnects. The engine test verifies initial terrain, light, sign text and system messages, authoritative movement, block breaking and placement, hotbar updates, enchanted items in chests, unsigned commands, mob tracking, and a dimension change on the same connection.
 
 To repeat the desktop focus regression, run the full engine command with `--x11-focus` on a dedicated X11 display with `xwininfo`, libX11, and working Vulkan. The test moves input focus away while the game is still visible, then unmaps the window for 35 seconds. It verifies server traffic during both stages and restores the window. The graphical run also verifies a chest shift-click transfer on the server. Xvfb and Mesa lavapipe work for this check.
 

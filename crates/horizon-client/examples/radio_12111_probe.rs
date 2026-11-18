@@ -43,10 +43,17 @@ impl Level {
     }
 }
 
-fn run(session: &Session, require_nether: bool) -> ProbeResult<()> {
+fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResult<()> {
     use play::{Clientbound as C, Serverbound as S};
 
-    let deadline = Instant::now() + Duration::from_secs(if require_nether { 75 } else { 55 });
+    let deadline = Instant::now()
+        + Duration::from_secs(if require_nether || peer.is_some() {
+            75
+        } else {
+            55
+        });
+    let mut peer_listed = false;
+    let mut peer_removed = false;
     let mut registries = None;
     let mut level: Option<Level> = None;
     let mut position = [0.0; 3];
@@ -162,6 +169,25 @@ fn run(session: &Session, require_nether: bool) -> ProbeResult<()> {
                         println!("ready in {}", level.name);
                     }
                 }
+                C::PlayerInfoUpdate(p) if !peer_listed => {
+                    peer_listed = p.entries.iter().any(|entry| {
+                        Some(entry.uuid) == peer
+                            && entry.listed == Some(true)
+                            && entry
+                                .name
+                                .as_ref()
+                                .is_some_and(|name| offline_uuid(name) == entry.uuid)
+                    });
+                    if peer_listed {
+                        println!("peer listed");
+                    }
+                }
+                C::PlayerInfoRemove(p)
+                    if peer_listed && peer.is_some_and(|uuid| p.uuids.contains(&uuid)) =>
+                {
+                    peer_removed = true;
+                    println!("peer removed from roster");
+                }
                 C::KeepAlive(_) => keepalives += 1,
                 C::Ping(p) => session.send(S::Pong(p)),
                 _ => {}
@@ -169,6 +195,7 @@ fn run(session: &Session, require_nether: bool) -> ProbeResult<()> {
         }
         if level.as_ref().is_some_and(|level| level.ready)
             && (!require_nether || nether_ready)
+            && (peer.is_none() || (peer_listed && (require_nether || peer_removed)))
             && keepalives >= 2
         {
             println!(
@@ -183,7 +210,7 @@ fn run(session: &Session, require_nether: bool) -> ProbeResult<()> {
         }
         thread::sleep(Duration::from_millis(10));
     }
-    Err(format!("probe incomplete: nether_ready={nether_ready}, chunks={chunks}, batches={batches}, keepalives={keepalives}").into())
+    Err(format!("probe incomplete: peer_listed={peer_listed}, peer_removed={peer_removed}, nether_ready={nether_ready}, chunks={chunks}, batches={batches}, keepalives={keepalives}").into())
 }
 
 fn main() -> ProbeResult<()> {
@@ -192,17 +219,24 @@ fn main() -> ProbeResult<()> {
     let require_nether = match args.next().as_deref() {
         None => false,
         Some("--require-nether") => true,
-        Some(_) => return Err("expected --require-nether".into()),
+        Some("--overworld") => false,
+        Some(_) => return Err("expected --require-nether or --overworld".into()),
     };
+    let name = args.next().unwrap_or_else(|| "RadioProbe".into());
+    let peer = args.next().map(|name| offline_uuid(&name));
+    if args.next().is_some() {
+        return Err("unexpected arguments after peer name".into());
+    }
     run(
         &Session::connect_radio_12111(
             &address,
-            "RadioProbe",
+            &name,
             None,
             configuration::ClientInformation::new(3),
             Arc::new(Language::new()),
             Default::default(),
         ),
         require_nether,
+        peer,
     )
 }
