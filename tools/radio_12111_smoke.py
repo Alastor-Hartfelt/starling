@@ -225,6 +225,23 @@ def run_engine(binary, resources, address, server, server_log, root, x11_focus=F
                 "the server system message", client,
             )
             print("Verified a 1.21.11 server system message", flush=True)
+
+            server_command(server, "scoreboard objectives add radio_smoke trigger")
+            server_command(server, "scoreboard players enable RadioEngine radio_smoke")
+            wait_for(lambda: "Enabled trigger [radio_smoke] for RadioEngine" in console(),
+                     "the server's command fixture", client)
+            response = request("chat /trigger radio_smoke set 774")
+            if response.get("error"):
+                raise RuntimeError(f"game command failed: {response['error']}")
+            wait_for(
+                lambda: "Triggered [radio_smoke]" in json.dumps(request("messages")),
+                "the server's response to the game command", client,
+            )
+            server_command(server, "scoreboard players get RadioEngine radio_smoke")
+            wait_for(lambda: "RadioEngine has 774 [radio_smoke]" in console(),
+                     "the score set by the game command", client)
+            print("Verified that the 1.21.11 server executed an unsigned player command", flush=True)
+
             server_command(server, "setblock 2 70 2 minecraft:polished_deepslate")
             wait_for(lambda: has_block("minecraft:polished_deepslate"), "the block update", client)
             print("Received the live 1.21.11 block update", flush=True)

@@ -160,6 +160,7 @@ impl Wire {
                 | play::Serverbound::Pong(_)
                 | play::Serverbound::CookieResponse(_)
                 | play::Serverbound::ClientTickEnd(_)
+                | play::Serverbound::ChatCommand(_)
                 | play::Serverbound::ChunkBatchReceived(_)
                 | play::Serverbound::PlayerLoaded(_)
                 | play::Serverbound::ClientInformation(_)
