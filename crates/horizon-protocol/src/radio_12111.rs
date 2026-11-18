@@ -215,12 +215,29 @@ pub fn decode_entity_move(id: i32, payload: &[u8]) -> Result<play::Clientbound> 
     })
 }
 
+/// Map a 1.21.11 block entity type ID to its 26.3 counterpart. Beds no
+/// longer have a separate block entity in the target registry.
+pub fn block_entity_type_to_engine(id: i32) -> Option<i32> {
+    usize::try_from(id)
+        .ok()
+        .and_then(|id| entity_types::BLOCK_ENTITY_TYPES.get(id).copied().flatten())
+        .map(i32::from)
+}
+
 /// Decode a 1.21.11 Level Chunk With Light payload after removing its packet ID.
 pub fn decode_level_chunk(payload: &[u8]) -> Result<play::LevelChunkWithLight> {
     let mut r = Reader::new(payload);
     let x = r.i32()?;
     let z = r.i32()?;
-    let chunk = ChunkData::read(&mut r)?;
+    let mut chunk = ChunkData::read(&mut r)?;
+    chunk.block_entities.retain_mut(|entity| {
+        if let Some(kind) = block_entity_type_to_engine(entity.kind) {
+            entity.kind = kind;
+            true
+        } else {
+            false
+        }
+    });
     let light = read_light_data(&mut r)?;
     if r.remaining() != 0 {
         return Err(crate::Error::new(
@@ -380,6 +397,13 @@ pub fn encode_teleport_ack(id: i32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_entity_ids_are_translated_and_retired_beds_have_no_engine_type() {
+        assert_eq!(block_entity_type_to_engine(27), Some(26)); // Barrel.
+        assert_eq!(block_entity_type_to_engine(25), None); // Bed.
+        assert_eq!(block_entity_type_to_engine(-1), None);
+    }
 
     #[test]
     fn relative_entity_move_has_fixed_deltas_and_a_trailing_ground_flag() {

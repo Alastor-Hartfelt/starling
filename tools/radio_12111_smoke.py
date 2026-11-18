@@ -106,6 +106,7 @@ def run_engine(binary, resources, address, server, server_log, root):
 
     server_command(server, "forceload add 0 0")
     server_command(server, "fill 0 70 0 12 70 12 minecraft:stone")
+    server_command(server, 'setblock 6 71 2 minecraft:oak_sign{front_text:{messages:["Radio initial","","",""]}}')
     server_command(server, "setblock 2 70 2 minecraft:oak_leaves[persistent=true]")
     wait_for(lambda: "Changed the block at 2, 70, 2" in console(), "the test block")
     with logs.open("w") as out, subprocess.Popen(
@@ -120,6 +121,21 @@ def run_engine(binary, resources, address, server, server_log, root):
                 "the oak leaf state from the initial chunk", client,
             )
             print("Loaded the exact 1.21.11 oak leaf state in the 26.3 engine", flush=True)
+            def sign_text_is(text):
+                block = request("block 6 71 2")
+                sign = block.get("sign", {})
+                return sign.get("front", [])[:1] == [text]
+
+            wait_for(lambda: sign_text_is("Radio initial"), "sign text in the initial chunk", client)
+            server_command(server, 'data modify block 6 71 2 front_text.messages[0] set value "Radio updated"')
+            wait_for(lambda: sign_text_is("Radio updated"), "the live sign update", client)
+            print("Verified initial and updated 1.21.11 sign text", flush=True)
+            server_command(server, 'tellraw RadioEngine {"text":"Radio 1.21.11 system message"}')
+            wait_for(
+                lambda: "Radio 1.21.11 system message" in json.dumps(request("messages")),
+                "the server system message", client,
+            )
+            print("Verified a 1.21.11 server system message", flush=True)
             server_command(server, "setblock 2 70 2 minecraft:polished_deepslate")
             wait_for(lambda: has_block("minecraft:polished_deepslate"), "the block update", client)
             print("Received the live 1.21.11 block update", flush=True)

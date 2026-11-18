@@ -216,6 +216,18 @@ impl Wire {
                 })?;
                 play::Clientbound::BlockUpdate(p)
             }
+            canonical::BLOCK_ENTITY_DATA => {
+                let play::Clientbound::BlockEntityData(mut p) =
+                    play::Clientbound::decode(id, payload)?
+                else {
+                    unreachable!();
+                };
+                let Some(kind) = radio_12111::block_entity_type_to_engine(p.kind) else {
+                    return Ok(None);
+                };
+                p.kind = kind;
+                play::Clientbound::BlockEntityData(p)
+            }
             canonical::LIGHT_UPDATE => {
                 play::Clientbound::LightUpdate(radio_12111::decode_light_update(payload)?)
             }
@@ -261,6 +273,7 @@ impl Wire {
             | canonical::SET_CHUNK_CACHE_RADIUS
             | canonical::SET_SIMULATION_DISTANCE
             | canonical::PLAYER_ABILITIES
+            | canonical::SYSTEM_CHAT
             | canonical::SET_HEALTH
             | canonical::KEEP_ALIVE
             | canonical::PING
