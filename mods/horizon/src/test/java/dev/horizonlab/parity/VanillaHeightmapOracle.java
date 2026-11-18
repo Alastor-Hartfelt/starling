@@ -1,6 +1,8 @@
 package dev.horizonlab.parity;
 
 import com.google.gson.*;
+import com.mojang.serialization.Codec;
+import com.mojang.serialization.Dynamic;
 import com.mojang.serialization.JsonOps;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -24,13 +26,33 @@ public final class VanillaHeightmapOracle {
     private static final Heightmap.Types[] TYPES=Heightmap.Types.values();
     private static PalettedContainerFactory factory;
 
-    private static JsonObject facts() {
+    @SuppressWarnings("unchecked")
+    private static Codec<BlockState> currentStateCodec() throws IllegalAccessException {
+        try {
+            return (Codec<BlockState>) BlockState.class.getField("FULL_CODEC").get(null);
+        } catch (NoSuchFieldException absentOn12111) {
+            return null;
+        }
+    }
+
+    private static JsonObject facts() throws IllegalAccessException {
+        var currentCodec = currentStateCodec();
+        var codec = currentCodec == null ? BlockState.CODEC : currentCodec;
         var result=new JsonObject();var states=new JsonArray();var defaults=new JsonObject();
         for(var state:Block.BLOCK_STATE_REGISTRY) {
             var entry=new JsonArray();
             entry.add(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
             entry.add(state.isAir());entry.add(!state.getFluidState().isEmpty());
-            entry.add(state.toString());entry.add(BlockState.FULL_CODEC.encodeStart(JsonOps.INSTANCE,state).getOrThrow());states.add(entry);
+            entry.add(state.toString());
+            var encoded = codec.encodeStart(JsonOps.INSTANCE, state).getOrThrow();
+            if (currentCodec == null) {
+                encoded = new Dynamic<>(JsonOps.INSTANCE, encoded)
+                    .renameField("Name", "id")
+                    .renameField("Properties", "properties")
+                    .getValue();
+            }
+            entry.add(encoded);
+            states.add(entry);
         }
         for(var id:new TreeSet<>(BuiltInRegistries.BLOCK.keySet()))
             defaults.addProperty(id.toString(),Block.getId(BuiltInRegistries.BLOCK.getValue(id).defaultBlockState()));
