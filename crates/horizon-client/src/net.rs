@@ -216,6 +216,26 @@ impl Wire {
                 })?;
                 play::Clientbound::BlockUpdate(p)
             }
+            canonical::LIGHT_UPDATE => {
+                play::Clientbound::LightUpdate(radio_12111::decode_light_update(payload)?)
+            }
+            canonical::SECTION_BLOCKS_UPDATE => {
+                let play::Clientbound::SectionBlocksUpdate(mut p) =
+                    play::Clientbound::decode(id, payload)?
+                else {
+                    unreachable!();
+                };
+                for update in &mut p.changes {
+                    let state = i32::try_from(*update >> 12)
+                        .ok()
+                        .and_then(radio_12111::block_state_to_engine)
+                        .ok_or_else(|| {
+                            horizon_protocol::Error::new("unknown 1.21.11 section update state")
+                        })?;
+                    *update = (i64::from(state) << 12) | (*update & 0xFFF);
+                }
+                play::Clientbound::SectionBlocksUpdate(p)
+            }
             canonical::PLAYER_POSITION
             | canonical::CHUNK_BATCH_FINISHED
             | canonical::FORGET_LEVEL_CHUNK
@@ -1466,6 +1486,29 @@ mod tests {
     use super::*;
 
     /// Launchers find the last server joined in `latest.log` by vanilla's line.
+    #[test]
+    fn radio_section_updates_remap_states_and_preserve_their_coordinates() {
+        use horizon_protocol::buf::Reader;
+
+        let raw = play::Clientbound::SectionBlocksUpdate(play::SectionBlocksUpdate {
+            section: [-2, 4, 5],
+            changes: vec![(279 << 12) | 0xF71, 1 << 12],
+        })
+        .encode();
+        let mut body = Reader::new(&raw);
+        let id = body.varint().unwrap();
+        let packet = Wire::Radio12111
+            .decode_play(id, body.rest())
+            .unwrap()
+            .unwrap();
+        let play::Clientbound::SectionBlocksUpdate(update) = packet else {
+            panic!("expected section block update");
+        };
+        assert_eq!(update.section, [-2, 4, 5]);
+        // Default oak leaves move from 279 to 294; stone stays at 1.
+        assert_eq!(update.changes, [(294 << 12) | 0xF71, 1 << 12]);
+    }
+
     #[test]
     fn the_connecting_line_is_vanillas() {
         let line = |address: &str| {

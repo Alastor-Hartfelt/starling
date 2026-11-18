@@ -145,6 +145,30 @@ pub fn decode_level_chunk(payload: &[u8]) -> Result<play::LevelChunkWithLight> {
     let x = r.i32()?;
     let z = r.i32()?;
     let chunk = ChunkData::read(&mut r)?;
+    let light = read_light_data(&mut r)?;
+    if r.remaining() != 0 {
+        return Err(crate::Error::new(
+            "unexpected trailing bytes in 1.21.11 chunk packet",
+        ));
+    }
+    Ok(play::LevelChunkWithLight { x, z, chunk, light })
+}
+
+/// Decode an incremental 1.21.11 light update.
+pub fn decode_light_update(payload: &[u8]) -> Result<play::LightUpdate> {
+    let mut r = Reader::new(payload);
+    let x = r.varint()?;
+    let z = r.varint()?;
+    let light = read_light_data(&mut r)?;
+    if r.remaining() != 0 {
+        return Err(crate::Error::new(
+            "unexpected trailing bytes in 1.21.11 light update",
+        ));
+    }
+    Ok(play::LightUpdate { x, z, light })
+}
+
+fn read_light_data(r: &mut Reader) -> Result<LightData> {
     // 1.21.11 sends BitSet.toLongArray(), with each long big-endian on the wire.
     // The shared LightData uses low-bit-first bytes for mask lookup.
     let read_mask = |r: &mut Reader| -> Result<Vec<u8>> {
@@ -154,19 +178,22 @@ pub fn decode_level_chunk(payload: &[u8]) -> Result<play::LevelChunkWithLight> {
             .collect())
     };
     let light = LightData {
-        sky_mask: read_mask(&mut r)?,
-        block_mask: read_mask(&mut r)?,
-        empty_sky_mask: read_mask(&mut r)?,
-        empty_block_mask: read_mask(&mut r)?,
-        sky: Layers::read(&mut r)?,
-        block: Layers::read(&mut r)?,
+        sky_mask: read_mask(r)?,
+        block_mask: read_mask(r)?,
+        empty_sky_mask: read_mask(r)?,
+        empty_block_mask: read_mask(r)?,
+        sky: Layers::read(r)?,
+        block: Layers::read(r)?,
     };
-    if r.remaining() != 0 {
-        return Err(crate::Error::new(
-            "unexpected trailing bytes in 1.21.11 chunk packet",
-        ));
+    if light
+        .sky
+        .iter()
+        .chain(&light.block)
+        .any(|layer| layer.len() != 2048)
+    {
+        return Err(crate::Error::new("invalid 1.21.11 light layer length"));
     }
-    Ok(play::LevelChunkWithLight { x, z, chunk, light })
+    Ok(light)
 }
 
 /// The 1.21.11 section header carries a block count followed by both palettes.
@@ -277,6 +304,29 @@ pub fn encode_teleport_ack(id: i32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incremental_light_accepts_long_masks_and_rejects_short_layers() {
+        // Chunk (-1, 2), with block light in layer zero and no sky light.
+        let mut w = Writer::new();
+        w.varint(-1);
+        w.varint(2);
+        w.long_array(&[]);
+        w.long_array(&[1]);
+        w.long_array(&[]);
+        w.long_array(&[]);
+        w.varint(0); // No sky arrays.
+        w.varint(1); // One block array.
+        let header = w.data.len();
+        w.byte_array(&[0x1f; 2048]);
+        let update = decode_light_update(&w.data).unwrap();
+        assert_eq!((update.x, update.z), (-1, 2));
+        assert_eq!(update.light.layers(1)[0].1.as_deref().unwrap()[0], 0x1f);
+
+        w.data.truncate(header);
+        w.byte_array(&[0x1f]);
+        assert!(decode_light_update(&w.data).is_err());
+    }
 
     #[test]
     fn block_palettes_translate_ids_from_vanilla_reports() {

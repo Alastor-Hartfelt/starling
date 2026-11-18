@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 import socket
 import subprocess
@@ -81,8 +82,8 @@ def run_engine(binary, resources, address, server, server_log, root):
             time.sleep(0.25)
         raise RuntimeError(f"timed out waiting for {description}")
 
-    def has_block(name, state=None):
-        block = request("block 2 70 2")
+    def has_block(name, state=None, x=2):
+        block = request(f"block {x} 70 2")
         return block.get("loaded") and block.get("block") == name and (
             state is None or block.get("state") == state
         )
@@ -91,16 +92,28 @@ def run_engine(binary, resources, address, server, server_log, root):
         state = request("state")
         return state.get("dimension") == "minecraft:the_nether" and state.get("player") is not None
 
+    def ready_on_platform():
+        state = request("state")
+        player = state.get("player")
+        if state.get("screen") == "playing" and player is not None:
+            x, y, z = player["position"]
+            if math.hypot(x - 2.5, z - 2.5) < 0.1 and abs(y - 71.0) < 0.2:
+                return [x, y, z]
+        return None
+
+    def console():
+        return server_log.read_text(errors="replace")
+
     server_command(server, "forceload add 0 0")
+    server_command(server, "fill 0 70 0 12 70 12 minecraft:stone")
     server_command(server, "setblock 2 70 2 minecraft:oak_leaves[persistent=true]")
-    console = lambda: server_log.read_text(errors="replace")
     wait_for(lambda: "Changed the block at 2, 70, 2" in console(), "the test block")
     with logs.open("w") as out, subprocess.Popen(
         args, env=env, cwd=game, stdout=out, stderr=subprocess.STDOUT
     ) as client:
         try:
             wait_for(lambda: "RadioEngine joined the game" in console(), "the game to join", client, timeout=120)
-            server_command(server, "teleport RadioEngine 2 71 2")
+            server_command(server, "teleport RadioEngine 2 71 2 0 0")
             wait_for(
                 lambda: has_block("minecraft:oak_leaves",
                                   "minecraft:oak_leaves[distance=7,persistent=true,waterlogged=false]"),
@@ -110,6 +123,34 @@ def run_engine(binary, resources, address, server, server_log, root):
             server_command(server, "setblock 2 70 2 minecraft:polished_deepslate")
             wait_for(lambda: has_block("minecraft:polished_deepslate"), "the block update", client)
             print("Received the live 1.21.11 block update", flush=True)
+            server_command(server, "fill 2 70 2 4 70 2 minecraft:glowstone")
+            wait_for(
+                lambda: all(has_block("minecraft:glowstone", x=x) for x in range(2, 5)),
+                "the batched section block update", client,
+            )
+            wait_for(
+                lambda: request("light 2 70 2 4 70 2").get("block") == "fff",
+                "glowstone block light", client,
+            )
+            print("Received the batched block update and block light", flush=True)
+            before = wait_for(ready_on_platform, "the player on the test platform", client)
+            movement = request("move forward 0.8")
+            if movement.get("error"):
+                raise RuntimeError(f"game movement failed: {movement['error']}")
+            server_command(server, "data get entity RadioEngine Pos")
+            report_prefix = "RadioEngine has the following entity data: ["
+
+            def server_position():
+                for line in console().splitlines():
+                    if report_prefix in line:
+                        coords = line.split(report_prefix, 1)[1].rstrip("]").split(",")
+                        return [float(value.strip().rstrip("dD")) for value in coords]
+                return None
+
+            position = wait_for(server_position, "the server's player position", client)
+            if math.hypot(position[0] - before[0], position[2] - before[2]) <= 0.4:
+                raise RuntimeError(f"server did not receive horizontal movement: {before} -> {position}")
+            print("Verified local movement on the 1.21.11 server", flush=True)
             server_command(server, "execute in minecraft:the_nether run teleport RadioEngine 0 128 0")
             wait_for(is_nether, "the Nether player", client)
             time.sleep(30)
@@ -155,6 +196,8 @@ def main():
             "view-distance=3\n"
             "simulation-distance=3\n"
             "generate-structures=false\n"
+            + ("level-type=minecraft:flat\n" if resources else "")
+            +
             "use-native-transport=false\n"
         )
         log = root / "server-console.log"
