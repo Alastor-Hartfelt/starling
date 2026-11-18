@@ -1,7 +1,4 @@
-//! First wire-format pieces for Minecraft Java 1.21.11 (protocol 774).
-//!
-//! The headless probe exercises these codecs through the client session.
-//! The graphical game still uses the inherited 26.3 protocol.
+//! Wire formats for the experimental Minecraft Java 1.21.11 (protocol 774) session.
 
 mod block_state_ranges;
 mod entity_types;
@@ -394,9 +391,49 @@ pub fn encode_teleport_ack(id: i32) -> Vec<u8> {
     writer.data
 }
 
+/// 26.3 added ChangeDestroyDirection after StartDestroyBlock. The remaining
+/// ordinals shift back by one on 1.21.11; the rest of the payload is identical.
+pub fn remap_player_action(mut action: play::PlayerAction) -> Option<play::PlayerAction> {
+    action.action = match action.action {
+        0 => 0,
+        2..=8 => action.action - 1,
+        _ => return None,
+    };
+    Some(action)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actions_use_the_12111_ordinals() {
+        let expected = [
+            Some(0),
+            None,
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(5),
+            Some(6),
+            Some(7),
+            None,
+        ];
+        for (action, expected) in expected.into_iter().enumerate() {
+            let packet = play::PlayerAction {
+                action: action as i32,
+                pos: [-1, 70, 2],
+                direction: 1,
+                sequence: 39,
+            };
+            let mapped = remap_player_action(packet.clone());
+            assert_eq!(
+                mapped,
+                expected.map(|action| play::PlayerAction { action, ..packet })
+            );
+        }
+    }
 
     #[test]
     fn block_entity_ids_are_translated_and_retired_beds_have_no_engine_type() {

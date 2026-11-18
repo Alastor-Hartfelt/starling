@@ -256,6 +256,38 @@ def run_engine(binary, resources, address, server, server_log, root, x11_focus=F
             if math.hypot(position[0] - before[0], position[2] - before[2]) <= 0.4:
                 raise RuntimeError(f"server did not receive horizontal movement: {before} -> {position}")
             print("Verified local movement on the 1.21.11 server", flush=True)
+
+            server_command(server, "teleport RadioEngine 2 71 2 0 0")
+            server_command(server, "setblock 2 72 4 minecraft:stone")
+            wait_for(ready_on_platform, "the player back at the block breaking position", client)
+            target = "block 2 72 4"
+            wait_for(lambda: request(target).get("block") == "minecraft:stone",
+                     "the creative breaking target", client)
+            click = request("mouse left click")
+            if click.get("error"):
+                raise RuntimeError(f"game attack failed: {click['error']}")
+            wait_for(lambda: request(target).get("block") == "minecraft:air",
+                     "the creative block break", client)
+            server_command(server, "execute if block 2 72 4 minecraft:air run say Radio confirmed creative break")
+            wait_for(lambda: "Radio confirmed creative break" in console(),
+                     "server confirmation of the creative break", client)
+
+            server_command(server, "gamemode survival RadioEngine")
+            server_command(server, "setblock 2 72 4 minecraft:oak_planks")
+            wait_for(lambda: request(target).get("block") == "minecraft:oak_planks",
+                     "the survival breaking target", client)
+            down = request("mouse left down")
+            if down.get("error"):
+                raise RuntimeError(f"game attack failed: {down['error']}")
+            wait_for(lambda: request(target).get("block") == "minecraft:air",
+                     "the survival block break", client, timeout=12)
+            request("mouse left up")
+            server_command(server, "execute if block 2 72 4 minecraft:air run say Radio confirmed survival break")
+            wait_for(lambda: "Radio confirmed survival break" in console(),
+                     "server confirmation of the survival break", client)
+            server_command(server, "gamemode creative RadioEngine")
+            print("Verified server-authoritative block breaking in creative and survival", flush=True)
+
             def pig_at(x, entity_id=None):
                 return next((
                     entity for entity in request("entities 24 pig").get("entities", [])

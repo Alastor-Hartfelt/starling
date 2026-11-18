@@ -1,6 +1,6 @@
 # Radio Client Rust — Minecraft Java 1.21.11 port
 
-Status: **planning / compatibility audit**, not yet a playable 1.21.11 build.
+The branch has an experimental offline-mode Minecraft 1.21.11 multiplayer session using prepared 26.3 engine resources. The Linux engine has been tested against a local vanilla 1.21.11 server. GitHub Actions builds Linux x86-64 and Android ARM64 previews.
 
 ## Goals
 - Shared native Rust client for Android ARM64 and desktop (Windows/Linux; macOS later).
@@ -9,21 +9,45 @@ Status: **planning / compatibility audit**, not yet a playable 1.21.11 build.
 - Prioritize low-end Android graphics compatibility, input and memory use.
 - Retain upstream MIT license and copyright notices. Obtain Minecraft assets through legitimate user-owned game files.
 
-## Confirmed starting points
-- Workspace includes `horizon-client`, `horizon-android`, `horizon-protocol`, and shared world/render crates.
-- `horizon-protocol/Cargo.toml` currently describes the **26.3 protocol (777)**.
-- Existing Android workflow triggers on `android`, `starling`, and `integration`, **not** this branch.
-- Desktop client exists as a separate crate. Android builds use `packaging/android/build_apk.py`.
-- Native engine mods are not Fabric Java mod binaries.
+## Reproduce the multiplayer tests
 
-## First implementation milestones
-1. **Version inventory:** find all 26.3-specific protocol IDs, registries, asset preparation paths, data fixers, worldgen assumptions, UI/version strings, and game rules. Record 1.21.11 equivalents from reliable versioned sources.
-2. **Build baseline:** verify `cargo check -p horizon-protocol` and `cargo check -p horizon-client` on a suitable desktop runner before changing version-dependent code. Record failures.
-3. **1.21.11 protocol adapter:** implement version-specific handshake, configuration, play packets and registries with fixture tests. Do not simply change the protocol number.
-4. **Asset preparation:** allow legally obtained 1.21.11 manifests/assets, with validation and isolated cache paths.
-5. **Gameplay/world parity:** reconcile block/item registries, entity metadata, worldgen and saves with 1.21.11; run tests before joining live servers.
-6. **Android baseline:** create a branch-scoped preview workflow for ARM64, using a distinct app identifier and debug signing; verify on a real Android device.
-7. **Performance:** profile FPS, frame times, memory, GPU compatibility and input latency on a 6 GB RAM Android tablet; tune based on measurements.
+Use Rust stable, Python 3, Java 21 or newer, and the Mojang 1.21.11 server jar. The baseline workflow downloads the jar and verifies its SHA-1. The full client also needs prepared 26.3 resources. Follow the source build instructions in the [README](../README.md) to prepare them with JDK 25.
+
+```sh
+cargo test --locked -p horizon-protocol --lib
+cargo test --locked -p horizon-client-lib --no-default-features --lib net::tests::
+cargo build --locked -p horizon-client-lib --example radio_12111_probe
+python3 tools/radio_12111_smoke.py "$SERVER_JAR" target/debug/examples/radio_12111_probe
+cargo build --locked -p horizon-client --no-default-features
+python3 tools/radio_12111_smoke.py "$SERVER_JAR" target/debug/horizon-client \
+  --engine-resources .local/horizon-client/26.3
+```
+
+The probe and engine run against a fresh local server with an isolated world and player data. The engine test verifies initial terrain, light, sign text and system messages, authoritative player movement, block breaking, mob tracking, and a dimension change on the same connection.
+
+To repeat the desktop focus regression, run the full engine command with `--x11-focus` on a dedicated X11 display with `xwininfo`, libX11, and working Vulkan. The test moves input focus away while the game is still visible, then unmaps the window for 35 seconds. It verifies server traffic during both stages and restores the window. Xvfb and Mesa lavapipe work for this check.
+
+For a direct desktop test, start the client with `--radio-1.21.11 --server HOST[:PORT] --name NAME --resources PATH`. Use an offline-mode 1.21.11 server.
+
+## Android ARM64 device test
+
+The branch's preview workflow packages a debug APK with application ID `io.github.juanluci.starling.preview`. Install it and finish the in-app 26.3 resource setup. Use a test device with USB debugging. If the device and server are both connected to the test host, `adb reverse tcp:25565 tcp:25565` routes the device's loopback port to the host's test server.
+
+```sh
+adb shell am force-stop io.github.juanluci.starling.preview
+printf '%s\n' --radio-1.21.11 --server 127.0.0.1:25565 --name RadioAndroid \
+  | adb shell -T 'run-as io.github.juanluci.starling.preview sh -c "cat > files/horizon-args.txt"'
+adb shell am start -n io.github.juanluci.starling.preview/io.github.juanluci.starling.LauncherActivity
+```
+
+After the server records the join, press Home for at least 35 seconds, return from Recents, and confirm that the same server connection responds to a teleport without a second join. Use `adb logcat -s starling` for packet or lifecycle errors. Repeat on Wi-Fi and record frame time, memory, device, and Vulkan driver at a fixed view distance on a 6 GB Adreno device. Remove `files/horizon-args.txt` with `adb shell run-as io.github.juanluci.starling.preview rm files/horizon-args.txt` after the test.
+
+## Remaining compatibility work
+
+1. Add a 1.21.11 item registry map and slot/component codecs. Validate server-given hotbar items and block placement before adding container transactions.
+2. Decode entity metadata and equipment, add player info, and test two clients tracking each other.
+3. Finish chat, commands, and 1.21.11 online-mode login. Exercise the shared encrypted session against an authenticated test server once implemented.
+4. Test Android backgrounding on hardware and profile frame time, memory, and thermals before choosing device-specific optimizations.
 
 ## Guardrails
 - Do not claim 1.21.11 support until a version-specific handshake and join test pass.

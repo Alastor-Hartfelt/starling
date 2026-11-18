@@ -149,6 +149,13 @@ impl Wire {
                     });
                     return self.send(writer, State::Play, &position.encode());
                 }
+                play::Serverbound::PlayerAction(action) => {
+                    if let Some(action) = radio_12111::remap_player_action(action) {
+                        let body = play::Serverbound::PlayerAction(action).encode();
+                        self.send(writer, State::Play, &body)?;
+                    }
+                    return Ok(());
+                }
                 play::Serverbound::KeepAlive(_)
                 | play::Serverbound::Pong(_)
                 | play::Serverbound::CookieResponse(_)
@@ -262,6 +269,7 @@ impl Wire {
             | canonical::MOVE_ENTITY_POS_ROT
             | canonical::MOVE_ENTITY_ROT => radio_12111::decode_entity_move(id, payload)?,
             canonical::PLAYER_POSITION
+            | canonical::BLOCK_CHANGED_ACK
             | canonical::REMOVE_ENTITIES
             | canonical::ROTATE_HEAD
             | canonical::TELEPORT_ENTITY
