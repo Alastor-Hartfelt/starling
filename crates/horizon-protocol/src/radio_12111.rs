@@ -425,6 +425,8 @@ fn read_item_slot(reader: &mut Reader) -> Result<Option<Stack>> {
             | component::ITEM_MODEL
             | component::LORE
             | component::RARITY
+            | component::ENCHANTMENTS
+            | component::STORED_ENCHANTMENTS
             | component::REPAIR_COST
             | component::ENCHANTMENT_GLINT_OVERRIDE => {}
             // 1.21.11 does not include per-component lengths here. Refuse the

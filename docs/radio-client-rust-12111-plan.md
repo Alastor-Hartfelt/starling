@@ -23,7 +23,7 @@ python3 tools/radio_12111_smoke.py "$SERVER_JAR" target/debug/horizon-client \
   --engine-resources .local/horizon-client/26.3
 ```
 
-The probe and engine run against a fresh local server with an isolated world and player data. The engine test verifies initial terrain, light, sign text and system messages, authoritative movement, block breaking and placement, hotbar updates, chest contents, unsigned commands, mob tracking, and a dimension change on the same connection.
+The probe and engine run against a fresh local server with an isolated world and player data. The engine test verifies initial terrain, light, sign text and system messages, authoritative movement, block breaking and placement, hotbar updates, enchanted items in chests, unsigned commands, mob tracking, and a dimension change on the same connection.
 
 To repeat the desktop focus regression, run the full engine command with `--x11-focus` on a dedicated X11 display with `xwininfo`, libX11, and working Vulkan. The test moves input focus away while the game is still visible, then unmaps the window for 35 seconds. It verifies server traffic during both stages and restores the window. The graphical run also verifies a chest shift-click transfer on the server. Xvfb and Mesa lavapipe work for this check.
 
@@ -44,10 +44,10 @@ After the server records the join, press Home for at least 35 seconds, return fr
 
 ## Remaining compatibility work
 
-1. Expand the 1.21.11 item component codec beyond the basic supported types, and finish creative inventory. Exercise 1.21.11 enchanted items, crafting, and other menus against vanilla.
+1. Expand the 1.21.11 item component codec beyond the basic supported types, and finish creative inventory. Exercise potions, shulker boxes, crafting, and other menus against vanilla.
 2. Decode entity metadata and equipment, add player info, and test two clients tracking each other.
 3. Exercise the shared login path against a Minecraft 1.21.11 server with online mode enabled and a signed-in Microsoft account. Add player chat, command suggestions, and signed commands.
-4. Test Android backgrounding on hardware and profile frame time, memory, and thermals before choosing device-specific optimizations.
+4. Expose the session version in the Android server UI. Test Android backgrounding on hardware and profile frame time, memory, and thermals before choosing device-specific optimizations.
 
 ## Guardrails
 - Do not claim 1.21.11 support until a version-specific handshake and join test pass.

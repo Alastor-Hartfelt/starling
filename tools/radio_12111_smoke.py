@@ -334,6 +334,14 @@ def run_engine(binary, resources, address, server, server_log, root, x11_focus=F
             server_command(server, "setblock 2 72 3 minecraft:air")
             server_command(server, "setblock 2 72 4 minecraft:chest")
             server_command(server, "item replace block 2 72 4 container.0 with minecraft:diamond_block 3")
+            server_command(
+                server, "item replace block 2 72 4 container.1 with "
+                "minecraft:golden_pickaxe[damage=11,enchantments={efficiency:4}]",
+            )
+            server_command(
+                server, "item replace block 2 72 4 container.2 with "
+                "minecraft:enchanted_book[stored_enchantments={mending:1}]",
+            )
             wait_for(lambda: request("block 2 72 3").get("block") == "minecraft:air"
                      and request(target).get("block") == "minecraft:chest",
                      "the server chest", client)
@@ -341,14 +349,25 @@ def run_engine(binary, resources, address, server, server_log, root, x11_focus=F
             if click.get("error"):
                 raise RuntimeError(f"game chest opening failed: {click['error']}")
 
-            def chest_contains_stack():
+            def chest_contains_stacks():
                 menu = request("menu")
-                return menu["screen"] == "inventory" and any(
-                    slot["slot"] == 300 and slot["stack"]["item"] == "minecraft:diamond_block"
-                    and slot["stack"]["count"] == 3 for slot in menu["slots"]
+                if menu["screen"] != "inventory":
+                    return False
+                stacks = {slot["slot"]: slot["stack"] for slot in menu["slots"]}
+                diamonds = stacks.get(300, {})
+                pickaxe = stacks.get(301, {})
+                book = stacks.get(302, {})
+                return (
+                    diamonds.get("item") == "minecraft:diamond_block"
+                    and diamonds.get("count") == 3
+                    and pickaxe.get("item") == "minecraft:golden_pickaxe"
+                    and pickaxe.get("damage") == 11
+                    and pickaxe.get("enchantments") == [["minecraft:efficiency", 4]]
+                    and book.get("item") == "minecraft:enchanted_book"
+                    and book.get("stored_enchantments") == [["minecraft:mending", 1]]
                 )
 
-            wait_for(chest_contains_stack, "the server chest's inventory", client, timeout=10)
+            wait_for(chest_contains_stacks, "the chest's blocks, enchanted pickaxe, and enchanted book", client, timeout=10)
             if x11_focus:
                 click = request("click-slot 300 shift")
                 if click.get("error"):
@@ -366,7 +385,7 @@ def run_engine(binary, resources, address, server, server_log, root, x11_focus=F
                 wait_for(server_confirmed_transfer, "the server-side chest transfer", client, timeout=10)
             request("key esc tap")
             wait_for(lambda: request("state").get("screen") == "playing", "closing the chest", client)
-            print("Verified opening and closing a 1.21.11 chest with its server inventory", flush=True)
+            print("Verified opening and closing a 1.21.11 chest with blocks and enchanted items", flush=True)
             if x11_focus:
                 print("Verified the server-side chest transfer", flush=True)
             server_command(server, "gamemode creative RadioEngine")
