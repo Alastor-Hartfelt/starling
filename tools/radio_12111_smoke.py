@@ -151,11 +151,35 @@ def run_engine(binary, resources, address, server, server_log, root):
             if math.hypot(position[0] - before[0], position[2] - before[2]) <= 0.4:
                 raise RuntimeError(f"server did not receive horizontal movement: {before} -> {position}")
             print("Verified local movement on the 1.21.11 server", flush=True)
+            def pig_at(x, entity_id=None):
+                return next((
+                    entity for entity in request("entities 24 pig").get("entities", [])
+                    if abs(entity["pos"][0] - x) < 0.12
+                    and abs(entity["pos"][2] - 6.5) < 0.12
+                    and (entity_id is None or entity["id"] == entity_id)
+                ), None)
+
+            server_command(server, 'summon minecraft:pig 6.5 71 6.5 {NoAI:1b,Tags:["radio_smoke"]}')
+            pig = wait_for(lambda: pig_at(6.5), "the 1.21.11 pig spawn", client)
+            server_command(server, "teleport @e[tag=radio_smoke,limit=1] 8.5 71 6.5")
+            wait_for(lambda: pig_at(8.5, pig["id"]), "the pig's updated position", client)
+            server_command(server, "kill @e[tag=radio_smoke,limit=1]")
+            wait_for(
+                lambda: all(entity["id"] != pig["id"] for entity in request("entities 24 pig")["entities"]),
+                "the pig's removal", client,
+            )
+            print("Verified a remapped entity spawn, teleport, and removal", flush=True)
             server_command(server, "execute in minecraft:the_nether run teleport RadioEngine 0 128 0")
             wait_for(is_nether, "the Nether player", client)
             time.sleep(30)
             if not is_nether() or console().count("RadioEngine joined the game") != 1:
                 raise RuntimeError("game lost its connection during the Nether soak")
+            decode_errors = [
+                line for line in logs.read_text(errors="replace").splitlines()
+                if "skipped undecodable packet" in line
+            ]
+            if decode_errors:
+                raise RuntimeError(f"game skipped a supported packet: {decode_errors[0]}")
             print("The same game connection stayed in the Nether for 30 seconds", flush=True)
             request("quit")
             client.wait(timeout=10)

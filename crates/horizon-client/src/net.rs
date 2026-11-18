@@ -236,7 +236,24 @@ impl Wire {
                 }
                 play::Clientbound::SectionBlocksUpdate(p)
             }
+            canonical::ADD_ENTITY => {
+                let play::Clientbound::AddEntity(p) = play::Clientbound::decode(id, payload)?
+                else {
+                    unreachable!();
+                };
+                play::Clientbound::AddEntity(radio_12111::remap_entity_spawn(p)?)
+            }
+            canonical::ENTITY_POSITION_SYNC => play::Clientbound::EntityPositionSync(
+                radio_12111::decode_entity_position_sync(payload)?,
+            ),
+            canonical::MOVE_ENTITY_POS
+            | canonical::MOVE_ENTITY_POS_ROT
+            | canonical::MOVE_ENTITY_ROT => radio_12111::decode_entity_move(id, payload)?,
             canonical::PLAYER_POSITION
+            | canonical::REMOVE_ENTITIES
+            | canonical::ROTATE_HEAD
+            | canonical::TELEPORT_ENTITY
+            | canonical::SET_ENTITY_MOTION
             | canonical::CHUNK_BATCH_FINISHED
             | canonical::FORGET_LEVEL_CHUNK
             | canonical::GAME_EVENT

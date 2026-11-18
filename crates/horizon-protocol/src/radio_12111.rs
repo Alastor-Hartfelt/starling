@@ -4,10 +4,11 @@
 //! The graphical game still uses the inherited 26.3 protocol.
 
 mod block_state_ranges;
+mod entity_types;
 
 use crate::{
     Result,
-    buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Reader, UByte, VarInt, Writer},
+    buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Reader, UByte, VarInt, Vec3d, Writer},
     chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy, pack},
     ids, packet,
     packets::{handshake, login, play},
@@ -137,6 +138,81 @@ pub fn decode_respawn(payload: &[u8]) -> Result<Respawn12111> {
         ));
     }
     Ok(packet)
+}
+
+/// Translate a 1.21.11 spawn to the engine's entity registry. A falling
+/// block also carries a block state ID in its spawn data.
+pub fn remap_entity_spawn(mut spawn: play::AddEntity) -> Result<play::AddEntity> {
+    if spawn.kind == entity_types::FALLING_BLOCK {
+        spawn.data = block_state_to_engine(spawn.data)
+            .ok_or_else(|| crate::Error::new("unknown 1.21.11 falling block state"))?;
+    }
+    spawn.kind = usize::try_from(spawn.kind)
+        .ok()
+        .and_then(|id| entity_types::ENTITY_TYPES.get(id).copied())
+        .map(i32::from)
+        .ok_or_else(|| crate::Error::new("unknown 1.21.11 entity type"))?;
+    Ok(spawn)
+}
+
+/// 1.21.11 synchronizes one absolute position, before PositionPath was
+/// introduced. Consume the old velocity field so the remaining fields align.
+pub fn decode_entity_position_sync(payload: &[u8]) -> Result<play::EntityPositionSync> {
+    let mut r = Reader::new(payload);
+    let id = r.varint()?;
+    let position = Vec3d::read(&mut r)?;
+    let _velocity = Vec3d::read(&mut r)?;
+    let packet = play::EntityPositionSync {
+        id,
+        path: play::PositionPath::Linear(position),
+        yaw: r.f32()?,
+        pitch: r.f32()?,
+        on_ground: r.bool()?,
+    };
+    if r.remaining() != 0 {
+        return Err(crate::Error::new(
+            "unexpected trailing bytes in 1.21.11 entity position",
+        ));
+    }
+    Ok(packet)
+}
+
+/// Decode a 1.21.11 relative entity move. Unlike 26.3, the position is
+/// always three shorts, and the on-ground flag follows the optional rotation.
+pub fn decode_entity_move(id: i32, payload: &[u8]) -> Result<play::Clientbound> {
+    use crate::ids::play::clientbound as ids;
+    let mut r = Reader::new(payload);
+    let entity_id = r.varint()?;
+    let delta = match id {
+        ids::MOVE_ENTITY_POS | ids::MOVE_ENTITY_POS_ROT => {
+            Some(play::VecDelta::Linear([r.i16()?, r.i16()?, r.i16()?]))
+        }
+        ids::MOVE_ENTITY_ROT => None,
+        _ => return Err(crate::Error::new("not a 1.21.11 entity move packet")),
+    };
+    let rotation = if id == ids::MOVE_ENTITY_POS {
+        None
+    } else {
+        Some((r.i8()?, r.i8()?))
+    };
+    let movement = play::MoveEntity {
+        id: entity_id,
+        delta,
+        rotation,
+        on_ground: r.bool()?,
+    };
+    if r.remaining() != 0 {
+        return Err(crate::Error::new(
+            "unexpected trailing bytes in 1.21.11 entity move",
+        ));
+    }
+    Ok(match id {
+        ids::MOVE_ENTITY_POS => play::Clientbound::MoveEntityPos(play::MoveEntityPos(movement)),
+        ids::MOVE_ENTITY_POS_ROT => {
+            play::Clientbound::MoveEntityPosRot(play::MoveEntityPosRot(movement))
+        }
+        _ => play::Clientbound::MoveEntityRot(play::MoveEntityRot(movement)),
+    })
 }
 
 /// Decode a 1.21.11 Level Chunk With Light payload after removing its packet ID.
@@ -304,6 +380,62 @@ pub fn encode_teleport_ack(id: i32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_entity_move_has_fixed_deltas_and_a_trailing_ground_flag() {
+        let payload = [9, 0x10, 0x00, 0xff, 0x80, 0, 0, 64, 0xf0, 1];
+        let id = ids::play::clientbound::MOVE_ENTITY_POS_ROT;
+        let play::Clientbound::MoveEntityPosRot(play::MoveEntityPosRot(movement)) =
+            decode_entity_move(id, &payload).unwrap()
+        else {
+            panic!("expected relative entity move");
+        };
+        assert_eq!(movement.id, 9);
+        assert_eq!(
+            movement.delta,
+            Some(play::VecDelta::Linear([4096, -128, 0]))
+        );
+        assert_eq!(movement.rotation, Some((64, -16)));
+        assert!(movement.on_ground);
+        assert!(decode_entity_move(id, &payload[..payload.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn entity_sync_keeps_the_position_and_rotation_after_the_legacy_velocity() {
+        let mut w = Writer::new();
+        w.varint(91);
+        Vec3d::write(&[-20.0, 68.0, 3.25], &mut w);
+        Vec3d::write(&[0.5, -0.08, 1.0], &mut w);
+        w.f32(90.0);
+        w.f32(-15.0);
+        w.bool(true);
+
+        let packet = decode_entity_position_sync(&w.data).unwrap();
+        assert_eq!(packet.id, 91);
+        assert_eq!(packet.path, play::PositionPath::Linear([-20.0, 68.0, 3.25]));
+        assert_eq!(
+            (packet.yaw, packet.pitch, packet.on_ground),
+            (90.0, -15.0, true)
+        );
+        assert!(decode_entity_position_sync(&w.data[..w.data.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn falling_block_spawn_remaps_both_entity_type_and_block_state() {
+        let spawn = play::AddEntity {
+            id: 1,
+            uuid: 2,
+            kind: 51,
+            position: [0.0; 3],
+            velocity: [0.0; 3],
+            pitch: 0,
+            yaw: 0,
+            head_yaw: 0,
+            data: 279,
+        };
+        let mapped = remap_entity_spawn(spawn).unwrap();
+        assert_eq!((mapped.kind, mapped.data), (52, 294));
+    }
 
     #[test]
     fn incremental_light_accepts_long_masks_and_rejects_short_layers() {
