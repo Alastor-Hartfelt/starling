@@ -186,6 +186,8 @@ pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(boo
     let flags = flags.iter().map(|f| (f & 1 != 0, f & 2 != 0)).collect();
     Ok((
         BlockRegistry {
+            // Snapshots cache the current engine's facts.json registry.
+            data_version: crate::DATA_VERSION,
             states,
             ids: id_map,
             collided: collided_map,

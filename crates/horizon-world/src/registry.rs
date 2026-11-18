@@ -16,6 +16,7 @@ use std::{
 pub struct BlockStateId(pub u32);
 
 pub struct BlockRegistry {
+    data_version: i32,
     states: Vec<BlockState>,
     /// Ids by a hash of their state, checked against `states`: 12 bytes per
     /// state instead of a second copy of every name and property map (about
@@ -38,7 +39,12 @@ fn state_key(state: &BlockState) -> u64 {
 }
 impl BlockRegistry {
     pub fn from_nbt(tag: &Tag) -> io::Result<Self> {
-        if tag.get("DataVersion") != Some(&Tag::Int(DATA_VERSION)) {
+        Self::from_versioned_nbt(tag, DATA_VERSION)
+    }
+
+    /// Read a prepared registry for a caller-selected data version.
+    pub fn from_versioned_nbt(tag: &Tag, data_version: i32) -> io::Result<Self> {
+        if tag.get("DataVersion") != Some(&Tag::Int(data_version)) {
             return Err(invalid("block registry DataVersion mismatch"));
         }
         let Some(Tag::List(entries)) = tag.get("states") else {
@@ -61,7 +67,13 @@ impl BlockRegistry {
                 Ok((name, i64::from(*id)))
             })
             .collect::<io::Result<_>>()?;
-        Self::from_states(states, defaults)
+        let mut registry = Self::from_states(states, defaults)?;
+        registry.data_version = data_version;
+        Ok(registry)
+    }
+
+    pub(crate) fn data_version(&self) -> i32 {
+        self.data_version
     }
 
     /// The registry of a resources `facts.json` (`{"states": [[..., ..., ...,
@@ -90,6 +102,7 @@ impl BlockRegistry {
         }
         let mut result = Self {
             states: Vec::with_capacity(states.len()),
+            data_version: DATA_VERSION,
             ids: HashMap::with_capacity(states.len()),
             collided: BTreeMap::new(),
             defaults: BTreeMap::new(),

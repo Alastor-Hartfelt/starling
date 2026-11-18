@@ -1,5 +1,7 @@
 package dev.horizonlab.parity;
 
+import com.mojang.serialization.Codec;
+import com.mojang.serialization.Dynamic;
 import java.io.*;
 import java.lang.reflect.*;
 import java.nio.file.*;
@@ -23,9 +25,35 @@ public final class VanillaCollisionOracle {
     private static Map<String,byte[]> generated;
     private static final Map<BlockState,Tag> encodedStates = new IdentityHashMap<>();
     private static final Map<VoxelShape,CompoundTag> encodedGrids = new IdentityHashMap<>();
+    private record StateCodec(Codec<BlockState> codec, boolean legacyFields) {
+        @SuppressWarnings("unchecked")
+        private static StateCodec load() {
+            try {
+                try {
+                    return new StateCodec((Codec<BlockState>) BlockState.class.getField("FULL_CODEC").get(null), false);
+                } catch (NoSuchFieldException absentOn12111) {
+                    return new StateCodec(BlockState.CODEC, true);
+                }
+            } catch (IllegalAccessException error) {
+                throw new ExceptionInInitializerError(error);
+            }
+        }
+
+        private Tag encode(BlockState state) {
+            var encoded = codec.encodeStart(NbtOps.INSTANCE, state).getOrThrow();
+            if (!legacyFields) return encoded;
+            return new Dynamic<>(NbtOps.INSTANCE, encoded)
+                .renameField("Name", "id")
+                .renameField("Properties", "properties")
+                .getValue();
+        }
+    }
+
+    private static final StateCodec STATE_CODEC = StateCodec.load();
+
     private static Tag encode(BlockState state) {
-        if (!REUSE) return BlockState.FULL_CODEC.encodeStart(NbtOps.INSTANCE,state).getOrThrow();
-        return encodedStates.computeIfAbsent(state, s -> BlockState.FULL_CODEC.encodeStart(NbtOps.INSTANCE,s).getOrThrow()).copy();
+        if (!REUSE) return STATE_CODEC.encode(state);
+        return encodedStates.computeIfAbsent(state, STATE_CODEC::encode).copy();
     }
     private static final Field CACHE, COLLISION, DISCRETE;
     private static final Method INDEX;

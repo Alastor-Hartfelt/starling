@@ -4,7 +4,6 @@
 //! The overload taking CollisionContext always calls block behavior instead.
 //! This module covers the cached branch only; uncached states remain explicit.
 use crate::{
-    DATA_VERSION,
     chunk::BlockSection,
     compression::invalid,
     nbt::Tag,
@@ -71,7 +70,7 @@ impl<'r> CachedCollisionRegistry<'r> {
     }
     pub fn from_table(table: BlockTable<'_, 'r>) -> io::Result<Self> {
         let (tag, registry) = (table.tag(), table.registry());
-        if tag.get("DataVersion") != Some(&Tag::Int(DATA_VERSION)) {
+        if tag.get("DataVersion") != Some(&Tag::Int(registry.data_version())) {
             return Err(invalid("collision DataVersion mismatch"));
         }
         let Some(Tag::List(entries)) = tag.get("shapes") else {
@@ -269,6 +268,33 @@ mod pipe_tests {
     use crate::registry::BlockTableFile;
     use horizon_core::geometry::ShapeOp;
     use std::path::PathBuf;
+
+    #[test]
+    fn collision_table_must_match_the_selected_registry_version() {
+        let version = 4671;
+        let states = Tag::List(vec![Tag::compound([(
+            "id",
+            Tag::String("minecraft:air".into()),
+        )])]);
+        let registry_tag = Tag::compound([
+            ("DataVersion", Tag::Int(version)),
+            ("states", states.clone()),
+            ("defaults", Tag::compound([("minecraft:air", Tag::Int(0))])),
+        ]);
+        assert!(BlockRegistry::from_nbt(&registry_tag).is_err());
+        let registry = BlockRegistry::from_versioned_nbt(&registry_tag, version).unwrap();
+        let mut collision_tag = Tag::compound([
+            ("DataVersion", Tag::Int(version)),
+            ("states", states),
+            ("shapes", Tag::List(Vec::new())),
+            ("cached_shapes", Tag::IntArray(vec![-1])),
+        ]);
+        let cached = CachedCollisionRegistry::from_nbt(&collision_tag, &registry).unwrap();
+        assert!(cached.cached_shape(BlockStateId(0)).unwrap().is_none());
+
+        *collision_tag.get_mut("DataVersion").unwrap() = Tag::Int(crate::DATA_VERSION);
+        assert!(CachedCollisionRegistry::from_nbt(&collision_tag, &registry).is_err());
+    }
 
     /// `pipe_shape` at the chorus plant's 10 pixels is vanilla's own shape for
     /// each of its 64 states.
