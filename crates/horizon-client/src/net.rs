@@ -149,6 +149,12 @@ impl Wire {
                     });
                     return self.send(writer, State::Play, &position.encode());
                 }
+                play::Serverbound::ContainerClick(click) => {
+                    let packet = play::Serverbound::ContainerClick(
+                        radio_12111::remap_container_click(click),
+                    );
+                    return self.send(writer, State::Play, &packet.encode());
+                }
                 play::Serverbound::PlayerAction(action) => {
                     if let Some(action) = radio_12111::remap_player_action(action) {
                         let body = play::Serverbound::PlayerAction(action).encode();
@@ -161,6 +167,7 @@ impl Wire {
                 | play::Serverbound::CookieResponse(_)
                 | play::Serverbound::ClientTickEnd(_)
                 | play::Serverbound::ChatCommand(_)
+                | play::Serverbound::ContainerClose(_)
                 | play::Serverbound::ChunkBatchReceived(_)
                 | play::Serverbound::PlayerLoaded(_)
                 | play::Serverbound::ClientInformation(_)
@@ -276,6 +283,9 @@ impl Wire {
             | canonical::SET_PLAYER_INVENTORY
             | canonical::SET_CURSOR_ITEM => radio_12111::decode_inventory(id, payload)?,
             canonical::PLAYER_POSITION
+            | canonical::OPEN_SCREEN
+            | canonical::CONTAINER_CLOSE
+            | canonical::CONTAINER_SET_DATA
             | canonical::SET_HELD_SLOT
             | canonical::BLOCK_CHANGED_ACK
             | canonical::REMOVE_ENTITIES

@@ -9,7 +9,7 @@ use crate::{
     buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Reader, UByte, VarInt, Vec3d, Writer},
     chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy, pack},
     ids,
-    item::{Component, Stack, component},
+    item::{Component, Hashed, Stack, component},
     packet,
     packets::{handshake, login, play},
 };
@@ -490,6 +490,49 @@ pub fn decode_inventory(id: i32, payload: &[u8]) -> Result<play::Clientbound> {
     Ok(packet)
 }
 
+fn legacy_registry_id(id: i32, lookup: &[i16]) -> Option<i32> {
+    let id = i16::try_from(id).ok().filter(|&id| id >= 0)?;
+    lookup
+        .iter()
+        .position(|&value| value == id)
+        .map(|index| index as i32)
+}
+
+fn remap_slot_hash(slot: &mut Option<Hashed>) -> bool {
+    let Some(stack) = slot else {
+        return true;
+    };
+    let Some(item) = legacy_registry_id(stack.item, &item_types::ITEMS) else {
+        return false;
+    };
+    stack.item = item;
+    stack.added.retain_mut(|(id, _)| {
+        legacy_registry_id(*id, &item_types::COMPONENTS).is_some_and(|legacy| {
+            *id = legacy;
+            true
+        })
+    });
+    stack.removed.retain_mut(|id| {
+        legacy_registry_id(*id, &item_types::COMPONENTS).is_some_and(|legacy| {
+            *id = legacy;
+            true
+        })
+    });
+    true
+}
+
+/// The 1.21.11 click layout uses the same prediction hashes and older registry
+/// IDs. Omitted predictions are synchronized from the authoritative menu.
+pub fn remap_container_click(mut click: play::ContainerClick) -> play::ContainerClick {
+    click
+        .changed
+        .retain_mut(|(_, prediction)| remap_slot_hash(prediction));
+    if !remap_slot_hash(&mut click.carried) {
+        click.carried = None;
+    }
+    click
+}
+
 /// 26.3 added ChangeDestroyDirection after StartDestroyBlock. The remaining
 /// ordinals shift back by one on 1.21.11; the rest of the payload is identical.
 pub fn remap_player_action(mut action: play::PlayerAction) -> Option<play::PlayerAction> {
@@ -504,6 +547,23 @@ pub fn remap_player_action(mut action: play::PlayerAction) -> Option<play::Playe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_click_translates_predicted_stack_ids_back_to_12111() {
+        let click = play::ContainerClick {
+            container: 1,
+            state: 2,
+            slot: 0,
+            button: 0,
+            input: 1,
+            changed: vec![(0, None), (54, Some(Hashed::of(&Stack::new(128, 2))))],
+            carried: None,
+        };
+        let clicked = remap_container_click(click);
+        assert!(clicked.changed[0].1.is_none());
+        let stack = clicked.changed[1].1.as_ref().unwrap();
+        assert_eq!((stack.item, stack.count), (92, 2));
+    }
 
     #[test]
     fn translates_a_12111_hotbar_slot_with_damage() {

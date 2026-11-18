@@ -330,6 +330,45 @@ def run_engine(binary, resources, address, server, server_log, root, x11_focus=F
                      client, timeout=10)
             wait_for(lambda: gold_in_hand(1), "the survival stack count after placement", client)
             print("Verified server hotbar updates and authoritative survival block placement", flush=True)
+
+            server_command(server, "setblock 2 72 3 minecraft:air")
+            server_command(server, "setblock 2 72 4 minecraft:chest")
+            server_command(server, "item replace block 2 72 4 container.0 with minecraft:diamond_block 3")
+            wait_for(lambda: request("block 2 72 3").get("block") == "minecraft:air"
+                     and request(target).get("block") == "minecraft:chest",
+                     "the server chest", client)
+            click = request("mouse right click")
+            if click.get("error"):
+                raise RuntimeError(f"game chest opening failed: {click['error']}")
+
+            def chest_contains_stack():
+                menu = request("menu")
+                return menu["screen"] == "inventory" and any(
+                    slot["slot"] == 300 and slot["stack"]["item"] == "minecraft:diamond_block"
+                    and slot["stack"]["count"] == 3 for slot in menu["slots"]
+                )
+
+            wait_for(chest_contains_stack, "the server chest's inventory", client, timeout=10)
+            if x11_focus:
+                click = request("click-slot 300 shift")
+                if click.get("error"):
+                    raise RuntimeError(f"game chest transfer failed: {click['error']}")
+
+                def server_confirmed_transfer():
+                    if "Radio confirmed chest transfer" in console():
+                        return True
+                    for slots in ("inventory.*", "hotbar.*"):
+                        server_command(server, f"execute if items entity RadioEngine {slots} minecraft:diamond_block"
+                                       " unless items block 2 72 4 container.0 minecraft:diamond_block"
+                                       " run say Radio confirmed chest transfer")
+                    return False
+
+                wait_for(server_confirmed_transfer, "the server-side chest transfer", client, timeout=10)
+            request("key esc tap")
+            wait_for(lambda: request("state").get("screen") == "playing", "closing the chest", client)
+            print("Verified opening and closing a 1.21.11 chest with its server inventory", flush=True)
+            if x11_focus:
+                print("Verified the server-side chest transfer", flush=True)
             server_command(server, "gamemode creative RadioEngine")
 
             def pig_at(x, entity_id=None):
