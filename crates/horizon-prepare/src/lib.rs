@@ -825,9 +825,8 @@ fn steps(
     write_json(&root.join("block-tags.json"), &tags)?;
     let tags = &tags;
 
-    let binding = run.oracle("VanillaBlockStateBindingOracle.java");
-    let helper = run.oracle("VanillaCuboidModelOracle.java");
-    let binding_sources = source_hashes(repo, &[&binding, &helper])?;
+    let binding = run.oracle("VanillaBlockStateSchemasExporter.java");
+    let binding_sources = source_hashes(repo, &[&binding])?;
     let visibility = run.oracle("VanillaFaceVisibilityOracle.java");
     let collision = run.oracle("VanillaCollisionOracle.java");
     let collision_sources = source_hashes(repo, &[&collision])?;
@@ -1099,9 +1098,9 @@ fn steps(
                 "model bindings",
                 client_cp,
                 &root.join("client-classes"),
-                &["VanillaBlockStateBindingOracle"],
+                &["VanillaBlockStateSchemasExporter"],
                 "512M",
-                &["export".into(), arg(&model_states)],
+                &[arg(&model_states)],
                 &root.join("model-state-export.log"),
             )?;
         }

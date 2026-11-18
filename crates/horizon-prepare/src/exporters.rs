@@ -20,7 +20,7 @@ const SERVER: &[&str] = &[
     "PrepareWorker",
 ];
 const CLIENT: &[&str] = &[
-    "VanillaBlockStateBindingOracle",
+    "VanillaBlockStateSchemasExporter",
     "VanillaEntityModelExporter",
     "VanillaMobDataExporter",
     "PrepareWorker",
