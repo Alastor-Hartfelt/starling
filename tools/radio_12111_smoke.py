@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Test the Radio probe or headless game against a scratch Minecraft 1.21.11 server."""
+"""Test the Radio probe or game against a scratch Minecraft 1.21.11 server."""
 
 import argparse
+import ctypes
 import json
 import math
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -40,7 +42,46 @@ def server_command(server, command):
     server.stdin.flush()
 
 
-def run_engine(binary, resources, address, server, server_log, root):
+def x11_window_info(*selection):
+    result = subprocess.run(["xwininfo", *selection], capture_output=True, text=True, timeout=5)
+    return result.stdout if result.returncode == 0 else ""
+
+
+def x11_window_action(window, action):
+    x11 = ctypes.CDLL("libX11.so.6")
+    display_type, window_type = ctypes.c_void_p, ctypes.c_ulong
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = display_type
+    x11.XMapWindow.argtypes = [display_type, window_type]
+    x11.XUnmapWindow.argtypes = [display_type, window_type]
+    x11.XSetInputFocus.argtypes = [display_type, window_type, ctypes.c_int, ctypes.c_ulong]
+    x11.XGetInputFocus.argtypes = [
+        display_type, ctypes.POINTER(window_type), ctypes.POINTER(ctypes.c_int),
+    ]
+    x11.XSync.argtypes = [display_type, ctypes.c_int]
+    x11.XCloseDisplay.argtypes = [display_type]
+    display = x11.XOpenDisplay(None)
+    if not display:
+        raise RuntimeError("cannot open the X11 display")
+    try:
+        if action == "hide":
+            x11.XUnmapWindow(display, window)
+        elif action == "blur":
+            x11.XSetInputFocus(display, 1, 2, 0)  # PointerRoot, RevertToParent, CurrentTime
+        else:
+            x11.XMapWindow(display, window)
+            x11.XSetInputFocus(display, window, 2, 0)
+        x11.XSync(display, 0)
+        if action != "hide":
+            focus, revert_to = window_type(), ctypes.c_int()
+            x11.XGetInputFocus(display, ctypes.byref(focus), ctypes.byref(revert_to))
+            if (focus.value == window) != (action == "focus"):
+                raise RuntimeError(f"could not {action} the Horizon window")
+    finally:
+        x11.XCloseDisplay(display)
+
+
+def run_engine(binary, resources, address, server, server_log, root, x11_focus=False):
     logs = root / "engine-console.log"
     endpoint = root / "control.json"
     env = os.environ.copy()
@@ -54,8 +95,13 @@ def run_engine(binary, resources, address, server, server_log, root):
     )
     game = root / "client"
     game.mkdir()
+    display_args = ["--width", "480", "--height", "320"] if x11_focus else ["--headless"]
+    if x11_focus:
+        env["WINIT_UNIX_BACKEND"] = "x11"
+        env.pop("WAYLAND_DISPLAY", None)
+        env.pop("WAYLAND_SOCKET", None)
     args = [
-        binary, "--headless", "--radio-1.21.11", "--resources", resources,
+        binary, *display_args, "--radio-1.21.11", "--resources", resources,
         "--game-dir", game, "--control-socket", endpoint, "--server", address,
         "--name", "RadioEngine", "--render-distance", "3",
     ]
@@ -100,6 +146,49 @@ def run_engine(binary, resources, address, server, server_log, root):
             if math.hypot(x - 2.5, z - 2.5) < 0.1 and abs(y - 71.0) < 0.2:
                 return [x, y, z]
         return None
+
+    def check_window_focus(client):
+        def get_window_id():
+            info = x11_window_info("-name", "Horizon")
+            match = re.search(r"Window id: (0x[0-9a-f]+)", info)
+            return int(match.group(1), 16) if match else None
+
+        window = wait_for(get_window_id, "the Horizon window", client)
+
+        def map_state():
+            return x11_window_info("-id", hex(window))
+
+        x11_window_action(window, "focus")
+        x11_window_action(window, "blur")
+        if "Map State: IsViewable" not in map_state():
+            raise RuntimeError("the game window ceased to be viewable after focus loss")
+        server_command(server, "setblock 3 70 9 minecraft:glowstone")
+        wait_for(
+            lambda: request("block 3 70 9").get("block") == "minecraft:glowstone",
+            "a server block update without window focus", client,
+        )
+
+        x11_window_action(window, "hide")
+        wait_for(lambda: "Map State: IsUnMapped" in map_state(), "the unmapped window", client)
+        hidden_until = time.monotonic() + 35
+        server_command(server, "teleport RadioEngine 4 71 9 0 0")
+        server_command(server, "setblock 4 70 9 minecraft:glowstone")
+
+        def continued_while_hidden():
+            player = request("state").get("player")
+            return (
+                player is not None
+                and math.hypot(player["position"][0] - 4.5, player["position"][2] - 9.5) < 0.12
+                and request("block 4 70 9").get("block") == "minecraft:glowstone"
+            )
+
+        wait_for(continued_while_hidden, "server packets while the window is hidden", client)
+        time.sleep(max(0, hidden_until - time.monotonic()))
+        if not continued_while_hidden() or console().count("RadioEngine joined the game") != 1:
+            raise RuntimeError("the original server connection did not survive a hidden window")
+        x11_window_action(window, "focus")
+        wait_for(lambda: "Map State: IsViewable" in map_state(), "the remapped window", client)
+        print("Verified live traffic during focus loss and 35 seconds hidden on the same connection", flush=True)
 
     def console():
         return server_log.read_text(errors="replace")
@@ -185,6 +274,8 @@ def run_engine(binary, resources, address, server, server_log, root):
                 "the pig's removal", client,
             )
             print("Verified a remapped entity spawn, teleport, and removal", flush=True)
+            if x11_focus:
+                check_window_focus(client)
             server_command(server, "execute in minecraft:the_nether run teleport RadioEngine 0 128 0")
             wait_for(is_nether, "the Nether player", client)
             time.sleep(30)
@@ -214,7 +305,13 @@ def main():
     parser.add_argument("server_jar", type=Path, help="Mojang's Minecraft 1.21.11 server jar")
     parser.add_argument("client", type=Path, help="radio_12111_probe example or horizon-client executable")
     parser.add_argument("--engine-resources", type=Path, help="prepared 26.3 resources for the full client test")
+    parser.add_argument(
+        "--x11-focus", action="store_true",
+        help="test focus loss and an unmapped window on a dedicated X11 display (requires xwininfo)",
+    )
     args = parser.parse_args()
+    if args.x11_focus and not (args.engine_resources and os.environ.get("DISPLAY")):
+        parser.error("--x11-focus requires --engine-resources and an X11 DISPLAY")
     server_jar = args.server_jar.resolve(strict=True)
     client = args.client.resolve(strict=True)
     resources = args.engine_resources and args.engine_resources.resolve(strict=True)
@@ -256,7 +353,7 @@ def main():
                     time.sleep(0.5)
                 address = f"127.0.0.1:{port}"
                 if resources:
-                    run_engine(client, resources, address, server, log, root)
+                    run_engine(client, resources, address, server, log, root, args.x11_focus)
                 else:
                     run_probe(client, address, server, root / "probe.log")
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
