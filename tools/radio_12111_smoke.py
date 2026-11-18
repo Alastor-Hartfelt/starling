@@ -302,8 +302,35 @@ def run_engine(binary, resources, address, server, server_log, root, x11_focus=F
             server_command(server, "execute if block 2 72 4 minecraft:air run say Radio confirmed survival break")
             wait_for(lambda: "Radio confirmed survival break" in console(),
                      "server confirmation of the survival break", client)
-            server_command(server, "gamemode creative RadioEngine")
             print("Verified server-authoritative block breaking in creative and survival", flush=True)
+
+            server_command(server, "setblock 2 72 4 minecraft:stone")
+            server_command(server, "item replace entity RadioEngine hotbar.1 with minecraft:gold_block 2")
+            request("hotbar 2")
+
+            def gold_in_hand(count):
+                held = request("state").get("held") or {}
+                return held.get("item") == "minecraft:gold_block" and held.get("count") == count
+
+            wait_for(lambda: gold_in_hand(2), "the translated server hotbar stack", client)
+            wait_for(lambda: request(target).get("block") == "minecraft:stone",
+                     "the block placement target", client)
+            click = request("mouse right click")
+            if click.get("error"):
+                raise RuntimeError(f"game block placement failed: {click['error']}")
+            wait_for(lambda: request("block 2 72 3").get("block") == "minecraft:gold_block",
+                     "the placed gold block", client)
+            def server_confirmed_placement():
+                if "Radio confirmed placement" in console():
+                    return True
+                server_command(server, "execute if block 2 72 3 minecraft:gold_block run say Radio confirmed placement")
+                return False
+
+            wait_for(server_confirmed_placement, "server confirmation of block placement",
+                     client, timeout=10)
+            wait_for(lambda: gold_in_hand(1), "the survival stack count after placement", client)
+            print("Verified server hotbar updates and authoritative survival block placement", flush=True)
+            server_command(server, "gamemode creative RadioEngine")
 
             def pig_at(x, entity_id=None):
                 return next((

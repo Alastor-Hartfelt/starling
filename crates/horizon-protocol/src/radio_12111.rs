@@ -2,12 +2,15 @@
 
 mod block_state_ranges;
 mod entity_types;
+mod item_types;
 
 use crate::{
     Result,
     buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Reader, UByte, VarInt, Vec3d, Writer},
     chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy, pack},
-    ids, packet,
+    ids,
+    item::{Component, Stack, component},
+    packet,
     packets::{handshake, login, play},
 };
 
@@ -391,6 +394,102 @@ pub fn encode_teleport_ack(id: i32) -> Vec<u8> {
     writer.data
 }
 
+fn item_registry_id(id: i32, lookup: &[i16]) -> Result<i32> {
+    usize::try_from(id)
+        .ok()
+        .and_then(|id| lookup.get(id).copied())
+        .filter(|&id| id >= 0)
+        .map(i32::from)
+        .ok_or_else(|| crate::Error::new(format!("unmapped 1.21.11 item registry ID {id}")))
+}
+
+fn read_item_slot(reader: &mut Reader) -> Result<Option<Stack>> {
+    let count = reader.varint()?;
+    if count <= 0 {
+        return Ok(None);
+    }
+    let item = item_registry_id(reader.varint()?, &item_types::ITEMS)?;
+    let mut stack = Stack::new(item, count);
+    let added = reader.count(104)?;
+    let removed = reader.count(104)?;
+    for _ in 0..added {
+        let kind = item_registry_id(reader.varint()?, &item_types::COMPONENTS)?;
+        match kind {
+            component::CUSTOM_DATA
+            | component::MAX_STACK_SIZE
+            | component::MAX_DAMAGE
+            | component::DAMAGE
+            | component::UNBREAKABLE
+            | component::CUSTOM_NAME
+            | component::ITEM_NAME
+            | component::ITEM_MODEL
+            | component::LORE
+            | component::RARITY
+            | component::REPAIR_COST
+            | component::ENCHANTMENT_GLINT_OVERRIDE => {}
+            // 1.21.11 does not include per-component lengths here. Refuse the
+            // packet if the component's wire format has not been checked.
+            _ => {
+                return Err(crate::Error::new(format!(
+                    "unsupported 1.21.11 item component {kind}"
+                )));
+            }
+        }
+        stack.added.push((kind, Component::read(kind, reader)?));
+    }
+    for _ in 0..removed {
+        stack
+            .removed
+            .push(item_registry_id(reader.varint()?, &item_types::COMPONENTS)?);
+    }
+    Ok(Some(stack))
+}
+
+pub fn decode_inventory(id: i32, payload: &[u8]) -> Result<play::Clientbound> {
+    use ids::play::clientbound as canonical;
+    let mut reader = Reader::new(payload);
+    let packet = match id {
+        canonical::CONTAINER_SET_CONTENT => {
+            let container = reader.varint()?;
+            let state = reader.varint()?;
+            let count = reader.count(reader.remaining())?;
+            let items = (0..count)
+                .map(|_| read_item_slot(&mut reader))
+                .collect::<Result<_>>()?;
+            play::Clientbound::ContainerSetContent(play::ContainerSetContent {
+                container,
+                state,
+                items,
+                carried: read_item_slot(&mut reader)?,
+            })
+        }
+        canonical::CONTAINER_SET_SLOT => {
+            play::Clientbound::ContainerSetSlot(play::ContainerSetSlot {
+                container: reader.varint()?,
+                state: reader.varint()?,
+                slot: reader.i16()?,
+                item: read_item_slot(&mut reader)?,
+            })
+        }
+        canonical::SET_PLAYER_INVENTORY => {
+            play::Clientbound::SetPlayerInventory(play::SetPlayerInventory {
+                slot: reader.varint()?,
+                item: read_item_slot(&mut reader)?,
+            })
+        }
+        canonical::SET_CURSOR_ITEM => play::Clientbound::SetCursorItem(play::SetCursorItem {
+            item: read_item_slot(&mut reader)?,
+        }),
+        _ => return Err(crate::Error::new("unknown 1.21.11 inventory packet")),
+    };
+    if reader.remaining() != 0 {
+        return Err(crate::Error::new(
+            "trailing bytes in 1.21.11 inventory packet",
+        ));
+    }
+    Ok(packet)
+}
+
 /// 26.3 added ChangeDestroyDirection after StartDestroyBlock. The remaining
 /// ordinals shift back by one on 1.21.11; the rest of the payload is identical.
 pub fn remap_player_action(mut action: play::PlayerAction) -> Option<play::PlayerAction> {
@@ -405,6 +504,24 @@ pub fn remap_player_action(mut action: play::PlayerAction) -> Option<play::Playe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translates_a_12111_hotbar_slot_with_damage() {
+        // Slot 3, count 1, 1.21.11 golden pickaxe (928), one added
+        // component, zero removed, minecraft:damage (3), damage value 11.
+        let payload = [3, 1, 0xa0, 7, 1, 0, 3, 11];
+        let kind = ids::play::clientbound::SET_PLAYER_INVENTORY;
+        let play::Clientbound::SetPlayerInventory(packet) =
+            decode_inventory(kind, &payload).unwrap()
+        else {
+            panic!("expected player inventory update");
+        };
+        let stack = packet.item.unwrap();
+        assert_eq!((packet.slot, stack.item, stack.damage()), (3, 1042, 11));
+        assert!(decode_inventory(kind, &payload[..7]).is_err());
+        // Component 104 is out of bounds and its unframed value cannot be skipped.
+        assert!(decode_inventory(kind, &[3, 1, 0xa0, 7, 1, 0, 104, 11]).is_err());
+    }
 
     #[test]
     fn actions_use_the_12111_ordinals() {

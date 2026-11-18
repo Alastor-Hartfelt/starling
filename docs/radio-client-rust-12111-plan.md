@@ -23,7 +23,7 @@ python3 tools/radio_12111_smoke.py "$SERVER_JAR" target/debug/horizon-client \
   --engine-resources .local/horizon-client/26.3
 ```
 
-The probe and engine run against a fresh local server with an isolated world and player data. The engine test verifies initial terrain, light, sign text and system messages, authoritative player movement, block breaking, mob tracking, and a dimension change on the same connection.
+The probe and engine run against a fresh local server with an isolated world and player data. The engine test verifies initial terrain, light, sign text and system messages, authoritative movement, block breaking and placement, hotbar updates, unsigned commands, mob tracking, and a dimension change on the same connection.
 
 To repeat the desktop focus regression, run the full engine command with `--x11-focus` on a dedicated X11 display with `xwininfo`, libX11, and working Vulkan. The test moves input focus away while the game is still visible, then unmaps the window for 35 seconds. It verifies server traffic during both stages and restores the window. Xvfb and Mesa lavapipe work for this check.
 
@@ -44,9 +44,9 @@ After the server records the join, press Home for at least 35 seconds, return fr
 
 ## Remaining compatibility work
 
-1. Add a 1.21.11 item registry map and slot/component codecs. Validate server-given hotbar items and block placement before adding container transactions.
+1. Expand the 1.21.11 item component codec beyond the basic supported types, then translate menu types, container transactions, and creative inventory. Exercise a chest and a 1.21.11 enchanted item against vanilla.
 2. Decode entity metadata and equipment, add player info, and test two clients tracking each other.
-3. Finish chat, commands, and 1.21.11 online-mode login. Exercise the shared encrypted session against an authenticated test server once implemented.
+3. Finish player chat, command suggestions and signed commands, and 1.21.11 online-mode login. Exercise the shared encrypted session against an authenticated test server once implemented.
 4. Test Android backgrounding on hardware and profile frame time, memory, and thermals before choosing device-specific optimizations.
 
 ## Guardrails

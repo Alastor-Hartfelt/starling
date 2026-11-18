@@ -168,7 +168,9 @@ impl Wire {
                 | play::Serverbound::MovePlayerPosRot(_)
                 | play::Serverbound::MovePlayerRot(_)
                 | play::Serverbound::MovePlayerStatus(_)
-                | play::Serverbound::PlayerInput(_) => {}
+                | play::Serverbound::PlayerInput(_)
+                | play::Serverbound::SetCarriedItem(_)
+                | play::Serverbound::UseItemOn(_) => {}
                 // Only send the supported subset of protocol 774 play packets.
                 _ => return Ok(()),
             }
@@ -269,7 +271,12 @@ impl Wire {
             canonical::MOVE_ENTITY_POS
             | canonical::MOVE_ENTITY_POS_ROT
             | canonical::MOVE_ENTITY_ROT => radio_12111::decode_entity_move(id, payload)?,
+            canonical::CONTAINER_SET_CONTENT
+            | canonical::CONTAINER_SET_SLOT
+            | canonical::SET_PLAYER_INVENTORY
+            | canonical::SET_CURSOR_ITEM => radio_12111::decode_inventory(id, payload)?,
             canonical::PLAYER_POSITION
+            | canonical::SET_HELD_SLOT
             | canonical::BLOCK_CHANGED_ACK
             | canonical::REMOVE_ENTITIES
             | canonical::ROTATE_HEAD
