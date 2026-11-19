@@ -124,9 +124,7 @@ public final class VanillaSimpleBlockOracle {
   net.minecraft.SharedConstants.tryDetectVersion();net.minecraft.server.Bootstrap.bootStrap();Path dir=Path.of(args[1]);
   if(args[0].equals("export")) {
    VanillaBlockSurvivalOracle.main(args);
-   var data=new JsonObject();var doubles=new JsonArray();var moss=new JsonArray();
-   for(var block:BuiltInRegistries.BLOCK){String name=BuiltInRegistries.BLOCK.getKey(block).toString();if(block instanceof DoublePlantBlock)doubles.add(name);if(block instanceof MossyCarpetBlock)moss.add(name);}
-   data.add("double_plants",doubles);data.add("mossy_carpets",moss);Files.writeString(dir.resolve("placement-definitions.json"),data.toString());return;
+   VanillaWorldgenBlocksExporter.placement(dir);return;
   }
   VanillaHeightmapOracle.bindTags(JsonParser.parseString(Files.readString(dir.resolve("tags.json"))).getAsJsonObject());
   var bind=VanillaBlockSurvivalOracle.class.getDeclaredMethod("bindFluidTags",JsonObject.class);bind.setAccessible(true);bind.invoke(null,JsonParser.parseString(Files.readString(dir.resolve("fluid-tags.json"))).getAsJsonObject());

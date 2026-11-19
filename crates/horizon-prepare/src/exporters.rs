@@ -15,7 +15,7 @@ const SERVER: &[&str] = &[
     "VanillaBlockBehaviourExporter",
     "VanillaCommandParseOracle",
     "VanillaCreativeTabsExporter",
-    "VanillaSimpleBlockOracle",
+    "VanillaWorldgenBlocksExporter",
     "VanillaStructureBlockExporter",
     "PrepareWorker",
 ];

@@ -18,10 +18,6 @@ import net.minecraft.world.level.block.state.*;
 /** Native survival calls over changing neighbor states and independent query failures. */
 public final class VanillaBlockSurvivalOracle {
  private static final class Stop extends RuntimeException {}
- private static Class<?> declaring(Class<?> type,String name,Class<?>... parameters) {
-  while(type!=null){try{type.getDeclaredMethod(name,parameters);return type;}catch(NoSuchMethodException e){type=type.getSuperclass();}}
-  return null;
- }
     private static void bindFluidTags(JsonObject resources) {
         var registry=BuiltInRegistries.FLUID;
         var loader=new TagLoader<Holder<Fluid>>((id,required)->registry.get(id).map(value->(Holder<Fluid>)value),"tags/fluid");
@@ -43,28 +39,7 @@ public final class VanillaBlockSurvivalOracle {
    if(args[0].equals("export")) {
    VanillaBlockPropertiesOracle.main(new String[]{"export",args[1]});VanillaBlockSupportOracle.main(new String[]{"export",args[1]});VanillaBlockStateCodecOracle.main(new String[]{"export",dir.resolve("facts.json").toString()});
    }
-   var extra=new JsonObject();var fenceGates=new JsonArray();var ignition=new JsonObject();
-   for(var block:BuiltInRegistries.BLOCK)if(block instanceof FenceGateBlock)fenceGates.add(BuiltInRegistries.BLOCK.getKey(block).toString());
-   var ignitionField=FireBlock.class.getDeclaredField("igniteOdds");ignitionField.setAccessible(true);
-   var odds=(it.unimi.dsi.fastutil.objects.Object2IntMap<?>)ignitionField.get(Blocks.FIRE);
-   for(var block:BuiltInRegistries.BLOCK)ignition.addProperty(BuiltInRegistries.BLOCK.getKey(block).toString(),odds.getInt(block));
-   extra.add("fence_gates",fenceGates);extra.add("ignition_odds",ignition);Files.writeString(dir.resolve("survival-extra-definitions.json"),extra.toString());
-   var definitions=new JsonObject();var placement=new JsonObject();var supportTags=new JsonObject();
-   for(var block:BuiltInRegistries.BLOCK){
-    String name=BuiltInRegistries.BLOCK.getKey(block).toString();
-    Class<?> type=declaring(block.getClass(),"canSurvive",BlockState.class,LevelReader.class,BlockPos.class);
-    definitions.addProperty(name,type.getSimpleName());
-    type=declaring(block.getClass(),"mayPlaceOn",BlockState.class,BlockGetter.class,BlockPos.class);
-    if(type!=null)placement.addProperty(name,type.getSimpleName());
-    var fields=new JsonObject();
-    for(Class<?> c=block.getClass();c!=null;c=c.getSuperclass())for(var field:c.getDeclaredFields())if(field.getType().equals(net.minecraft.tags.TagKey.class)&&!Modifier.isStatic(field.getModifiers())) {
-     field.setAccessible(true);var tag=(net.minecraft.tags.TagKey<?>)field.get(block);if(tag!=null)fields.addProperty(field.getName(),tag.location().toString());
-    }
-    if(fields.size()>0)supportTags.add(name,fields);
-   }
-   Files.writeString(dir.resolve("survival-classes.json"),definitions.toString());
-   Files.writeString(dir.resolve("survival-placement-classes.json"),placement.toString());
-   Files.writeString(dir.resolve("survival-support-tags.json"),supportTags.toString());return;
+   VanillaWorldgenBlocksExporter.survival(dir);return;
   }
   VanillaHeightmapOracle.bindTags(JsonParser.parseString(Files.readString(dir.resolve("tags.json"))).getAsJsonObject());
   bindFluidTags(JsonParser.parseString(Files.readString(dir.resolve("fluid-tags.json"))).getAsJsonObject());
