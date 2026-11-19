@@ -107,6 +107,7 @@ pub struct GenBlockState {
     pub fluid: bool,
     pub motion: bool,
     pub no_leaves: bool,
+    exclude_leaf_fluid: bool,
 }
 impl HeightmapState for GenBlockState {
     fn is_air(self) -> bool {
@@ -123,6 +124,9 @@ impl HeightmapState for GenBlockState {
     }
     fn blocks_motion_in_heightmap_no_leaves(self) -> bool {
         self.no_leaves
+    }
+    fn motion_blocking_no_leaves(self) -> bool {
+        self.no_leaves || (self.fluid && !self.exclude_leaf_fluid)
     }
 }
 /// Shared, cheaply cloned state table bound into every generated chunk.
@@ -429,8 +433,18 @@ impl GeneratorData {
                 .map(String::as_str)
                 .collect())
         };
-        let motion = tag_set("minecraft:blocks_motion_in_heightmap")?;
-        let no_leaves = tag_set("minecraft:blocks_motion_in_heightmap_no_leaves")?;
+        let native = registry.heightmap_predicates();
+        let (motion, no_leaves) = if registry.data_version() == 4671 {
+            if native.is_none() {
+                return Err(resource("missing 1.21.11 block heightmap predicates"));
+            }
+            (BTreeSet::new(), BTreeSet::new())
+        } else {
+            (
+                tag_set("minecraft:blocks_motion_in_heightmap")?,
+                tag_set("minecraft:blocks_motion_in_heightmap_no_leaves")?,
+            )
+        };
         let mut values = BTreeMap::<(String, String), bool>::new();
         let states = (0..registry.len())
             .map(|i| {
@@ -449,8 +463,13 @@ impl GeneratorData {
                     air: flags[i].0,
                     air_block: state.name == "minecraft:air",
                     fluid: flags[i].1,
-                    motion: motion.contains(state.name.as_str()),
-                    no_leaves: no_leaves.contains(state.name.as_str()),
+                    motion: native
+                        .map_or_else(|| motion.contains(state.name.as_str()), |m| m[i] & 1 != 0),
+                    no_leaves: native.map_or_else(
+                        || no_leaves.contains(state.name.as_str()),
+                        |m| m[i] & 2 != 0,
+                    ),
+                    exclude_leaf_fluid: native.is_some_and(|m| m[i] & 2 == 0),
                 }
             })
             .collect::<Vec<_>>();

@@ -22,6 +22,7 @@ pub struct StateFacts {
     air_block: bool,
     motion: bool,
     no_leaves: bool,
+    exclude_leaf_fluid: bool,
 }
 impl HeightmapState for StateFacts {
     fn is_air(self) -> bool {
@@ -38,6 +39,9 @@ impl HeightmapState for StateFacts {
     }
     fn blocks_motion_in_heightmap_no_leaves(self) -> bool {
         self.no_leaves
+    }
+    fn motion_blocking_no_leaves(self) -> bool {
+        self.no_leaves || (self.fluid && !self.exclude_leaf_fluid)
     }
 }
 #[derive(Clone)]
@@ -57,6 +61,7 @@ impl Properties {
                     air_block: i == 0,
                     motion,
                     no_leaves,
+                    exclude_leaf_fluid: false,
                 })
                 .collect(),
         ))
@@ -116,10 +121,18 @@ impl Assets {
         let manifest: Value = serde_json::from_reader(BufReader::new(File::open(
             root.join("horizon-resources.json"),
         )?))?;
-        if manifest["data_version"].as_i64() != Some(i64::from(DATA_VERSION)) {
+        let version = manifest["data_version"].as_i64();
+        if version != Some(4671) && version != Some(i64::from(DATA_VERSION)) {
             return Err(invalid("resources do not match Horizon's pinned data version").into());
         }
         let (registry, flags) = horizon_world::level::data::load_registry_with_flags(root)?;
+        if version != Some(i64::from(registry.data_version())) {
+            return Err(invalid("resource manifest and block registry versions differ").into());
+        }
+        let native = registry.heightmap_predicates();
+        if version == Some(4671) && native.is_none() {
+            return Err(invalid("missing 1.21.11 block heightmap predicates").into());
+        }
         let bundle: Value =
             serde_json::from_reader(BufReader::new(File::open(root.join("block-tags.json"))?))?;
         let mut definitions = TagDefinitions::default();
@@ -139,27 +152,21 @@ impl Assets {
         if !built.missing.is_empty() {
             return Err(invalid("unresolved block tags").into());
         }
-        let motion: BTreeSet<_> = built
-            .tags
-            .get("minecraft:blocks_motion_in_heightmap")
-            .ok_or_else(|| invalid("missing motion tag"))?
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let no_leaves: BTreeSet<_> = built
-            .tags
-            .get("minecraft:blocks_motion_in_heightmap_no_leaves")
-            .ok_or_else(|| invalid("missing no-leaves motion tag"))?
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let blocks_fluid_flow = built
-            .tags
-            .get("minecraft:blocks_fluid_flow")
-            .ok_or_else(|| invalid("missing fluid flow tag"))?
-            .iter()
-            .cloned()
-            .collect();
+        let tag = |name| -> io::Result<BTreeSet<String>> {
+            if native.is_some() {
+                return Ok(BTreeSet::new());
+            }
+            Ok(built
+                .tags
+                .get(name)
+                .ok_or_else(|| invalid("missing block physics tag"))?
+                .iter()
+                .cloned()
+                .collect())
+        };
+        let motion = tag("minecraft:blocks_motion_in_heightmap")?;
+        let no_leaves = tag("minecraft:blocks_motion_in_heightmap_no_leaves")?;
+        let blocks_fluid_flow = tag("minecraft:blocks_fluid_flow")?;
         let properties = Properties(Arc::new(
             flags
                 .iter()
@@ -173,8 +180,11 @@ impl Assets {
                         air,
                         fluid,
                         air_block: name == "minecraft:air",
-                        motion: motion.contains(name.as_str()),
-                        no_leaves: no_leaves.contains(name.as_str()),
+                        motion: native
+                            .map_or_else(|| motion.contains(name.as_str()), |m| m[i] & 1 != 0),
+                        no_leaves: native
+                            .map_or_else(|| no_leaves.contains(name.as_str()), |m| m[i] & 2 != 0),
+                        exclude_leaf_fluid: native.is_some_and(|m| m[i] & 2 == 0),
                     })
                 })
                 .collect::<Result<_>>()?,
@@ -196,6 +206,14 @@ impl Assets {
             blocks_fluid_flow,
         })
     }
+    /// FlowingFluid uses BlockState.blocksMotion in 1.21.11 and a block tag in 26.3.
+    pub fn blocks_flow(&self, state: usize, name: &str) -> bool {
+        match self.registry.heightmap_predicates() {
+            Some(table) => table[state] & 1 != 0,
+            None => self.blocks_fluid_flow.contains(name),
+        }
+    }
+
     /// The models and sprites of another resource root over these blocks
     /// (resource packs changed): the registry and block facts come from the
     /// game data, which resource packs do not touch.
@@ -319,6 +337,35 @@ impl RenderAssets {
 mod tests {
     use crate::items::ConsumeEffect;
     use horizon_world::loot::PackOverlay;
+
+    #[test]
+    #[ignore = "requires a private 1.21.11 resource export in RADIO_12111_RESOURCES"]
+    fn official_12111_heightmaps_and_flow_match_every_state() {
+        use super::*;
+        use horizon_world::heightmap::HeightmapType;
+        let root = std::env::var_os("RADIO_12111_RESOURCES").unwrap();
+        let assets = Assets::load(Path::new(&root)).unwrap();
+        let table = assets.registry.heightmap_predicates().unwrap();
+        assert_eq!(table.len(), 29671);
+        let mut wet_leaves = 0;
+        for (i, &mask) in table.iter().enumerate() {
+            let id = BlockStateId(i as u32);
+            let state = assets.properties.heightmap_state(id);
+            let block = assets.registry.state(id).unwrap();
+            assert_eq!(HeightmapType::OceanFloor.is_opaque(state), mask & 1 != 0);
+            assert_eq!(
+                HeightmapType::MotionBlockingNoLeaves.is_opaque(state),
+                mask & 2 != 0
+            );
+            assert_eq!(assets.blocks_flow(i, &block.name), mask & 1 != 0);
+            if block.name == "minecraft:oak_leaves" && state.has_fluid() {
+                assert!(HeightmapType::MotionBlocking.is_opaque(state));
+                assert!(!HeightmapType::MotionBlockingNoLeaves.is_opaque(state));
+                wet_leaves += 1;
+            }
+        }
+        assert!(wet_leaves > 0);
+    }
 
     #[test]
     fn always_edible_and_consume_effects_loaded() {

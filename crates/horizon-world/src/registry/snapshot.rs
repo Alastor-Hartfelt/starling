@@ -25,6 +25,7 @@ struct WireState {
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Snapshot {
     data_version: i32,
+    heightmap_predicates: Option<Vec<u8>>,
     /// Every block name and property name and value, in first-use order.
     strings: Vec<String>,
     states: Vec<WireState>,
@@ -91,6 +92,7 @@ pub(crate) fn capture(registry: &BlockRegistry, flags: &[(bool, bool)]) -> Snaps
         .collect();
     Snapshot {
         data_version: registry.data_version(),
+        heightmap_predicates: registry.heightmap_predicates.clone(),
         strings: strings.strings,
         states,
         flags,
@@ -103,6 +105,7 @@ pub(crate) fn capture(registry: &BlockRegistry, flags: &[(bool, bool)]) -> Snaps
 pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(bool, bool)>)> {
     let Snapshot {
         data_version,
+        heightmap_predicates,
         strings,
         states,
         flags,
@@ -187,17 +190,16 @@ pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(boo
         }
     }
     let flags = flags.iter().map(|f| (f & 1 != 0, f & 2 != 0)).collect();
-    Ok((
-        BlockRegistry {
-            // Snapshots cache the current engine's facts.json registry.
-            data_version,
-            states,
-            ids: id_map,
-            collided: collided_map,
-            defaults: default_map,
-        },
-        flags,
-    ))
+    let mut registry = BlockRegistry {
+        heightmap_predicates: None,
+        data_version,
+        states,
+        ids: id_map,
+        collided: collided_map,
+        defaults: default_map,
+    };
+    registry.set_heightmap_predicates(heightmap_predicates)?;
+    Ok((registry, flags))
 }
 
 #[cfg(test)]
@@ -251,6 +253,7 @@ mod tests {
         );
         let mut facts: serde_json::Value = serde_json::from_str(plain).unwrap();
         facts["data_version"] = 4671.into();
+        facts["heightmap_predicates"] = serde_json::json!([0]);
         let (registry, flags) =
             BlockRegistry::from_facts_json_with_flags(facts.to_string().as_bytes()).unwrap();
         assert_eq!(registry.data_version(), 4671);
@@ -262,6 +265,13 @@ mod tests {
                 .data_version(),
             4671
         );
+        let restored = restore(postcard::from_bytes(&bytes).unwrap()).unwrap().0;
+        assert_eq!(restored.heightmap_predicates(), Some([0u8].as_slice()));
+        for invalid in [serde_json::json!([]), serde_json::json!([4])] {
+            facts["heightmap_predicates"] = invalid;
+            assert!(BlockRegistry::from_facts_json(facts.to_string().as_bytes()).is_err());
+        }
+        facts["heightmap_predicates"] = serde_json::json!([0]);
         facts["data_version"] = 0.into();
         assert!(BlockRegistry::from_facts_json(facts.to_string().as_bytes()).is_err());
     }

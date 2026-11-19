@@ -17,6 +17,7 @@ pub struct BlockStateId(pub u32);
 
 pub struct BlockRegistry {
     data_version: i32,
+    heightmap_predicates: Option<Vec<u8>>,
     states: Vec<BlockState>,
     /// Ids by a hash of their state, checked against `states`: 12 bytes per
     /// state instead of a second copy of every name and property map (about
@@ -75,6 +76,24 @@ impl BlockRegistry {
         self.data_version
     }
 
+    /// The vanilla 1.21.11 ocean floor and motion-blocking-no-leaves predicates,
+    /// indexed by raw block state. Only the 1.21.11 facts exporter supplies these.
+    pub fn heightmap_predicates(&self) -> Option<&[u8]> {
+        self.heightmap_predicates.as_deref()
+    }
+
+    fn set_heightmap_predicates(&mut self, predicates: Option<Vec<u8>>) -> io::Result<()> {
+        if let Some(values) = &predicates
+            && (self.data_version != 4671
+                || values.len() != self.len()
+                || values.iter().any(|&v| v > 3))
+        {
+            return Err(invalid("invalid block heightmap predicate table"));
+        }
+        self.heightmap_predicates = predicates;
+        Ok(())
+    }
+
     /// The registry of a resources `facts.json` (`{"states": [[..., ..., ...,
     /// ..., state], ...], "defaults": {name: id}}`), read as it streams: no
     /// JSON or NBT tree of the whole file is built. For a pack of 190,000
@@ -95,10 +114,9 @@ impl BlockRegistry {
         if !matches!(facts.data_version, 4671 | 5023) {
             return Err(invalid("unsupported block facts DataVersion"));
         }
-        Ok((
-            Self::from_states(states, facts.defaults, facts.data_version)?,
-            flags,
-        ))
+        let mut registry = Self::from_states(states, facts.defaults, facts.data_version)?;
+        registry.set_heightmap_predicates(facts.heightmap_predicates)?;
+        Ok((registry, flags))
     }
 
     fn from_states(
@@ -112,6 +130,7 @@ impl BlockRegistry {
         let mut result = Self {
             states: Vec::with_capacity(states.len()),
             data_version,
+            heightmap_predicates: None,
             ids: HashMap::with_capacity(states.len()),
             collided: BTreeMap::new(),
             defaults: BTreeMap::new(),

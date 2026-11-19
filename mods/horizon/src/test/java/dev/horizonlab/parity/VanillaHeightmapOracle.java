@@ -39,7 +39,14 @@ public final class VanillaHeightmapOracle {
         var currentCodec = currentStateCodec();
         var codec = currentCodec == null ? BlockState.CODEC : currentCodec;
         var result=new JsonObject();var states=new JsonArray();var defaults=new JsonObject();
+        int version = SharedConstants.getCurrentVersion().dataVersion().version();
+        var heightmaps = new JsonArray();
         for(var state:Block.BLOCK_STATE_REGISTRY) {
+            if (version == 4671) {
+                int floor = Heightmap.Types.OCEAN_FLOOR.isOpaque().test(state) ? 1 : 0;
+                int noLeaves = Heightmap.Types.MOTION_BLOCKING_NO_LEAVES.isOpaque().test(state) ? 2 : 0;
+                heightmaps.add(floor | noLeaves);
+            }
             var entry=new JsonArray();
             entry.add(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
             entry.add(state.isAir());entry.add(!state.getFluidState().isEmpty());
@@ -56,7 +63,7 @@ public final class VanillaHeightmapOracle {
         }
         for(var id:new TreeSet<>(BuiltInRegistries.BLOCK.keySet()))
             defaults.addProperty(id.toString(),Block.getId(BuiltInRegistries.BLOCK.getValue(id).defaultBlockState()));
-        int version = net.minecraft.SharedConstants.getCurrentVersion().dataVersion().version();
+        if (version == 4671) result.add("heightmap_predicates", heightmaps);
         if (version != 5023) result.addProperty("data_version", version);
         result.add("states",states);result.add("defaults",defaults);return result;
     }

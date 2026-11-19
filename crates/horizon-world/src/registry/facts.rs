@@ -15,6 +15,7 @@ pub(super) struct Facts {
     // Existing 26.3 resource bundles predate the version field.
     #[serde(default = "unversioned_facts_version")]
     pub data_version: i32,
+    pub heightmap_predicates: Option<Vec<u8>>,
     pub states: Vec<Row>,
     pub defaults: BTreeMap<String, i64>,
 }

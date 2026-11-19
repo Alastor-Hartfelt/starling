@@ -52,9 +52,7 @@ impl HeightmapType {
             Self::WorldSurfaceWg | Self::WorldSurface => !state.is_air(),
             Self::OceanFloorWg | Self::OceanFloor => state.blocks_motion_in_heightmap(),
             Self::MotionBlocking => state.blocks_motion_in_heightmap() || state.has_fluid(),
-            Self::MotionBlockingNoLeaves => {
-                state.blocks_motion_in_heightmap_no_leaves() || state.has_fluid()
-            }
+            Self::MotionBlockingNoLeaves => state.motion_blocking_no_leaves(),
         }
     }
 }
@@ -66,6 +64,9 @@ pub trait HeightmapState: Copy {
     fn has_fluid(self) -> bool;
     fn blocks_motion_in_heightmap(self) -> bool;
     fn blocks_motion_in_heightmap_no_leaves(self) -> bool;
+    fn motion_blocking_no_leaves(self) -> bool {
+        self.blocks_motion_in_heightmap_no_leaves() || self.has_fluid()
+    }
 }
 
 pub trait HeightmapChunk {

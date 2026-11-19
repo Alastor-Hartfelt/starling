@@ -40,7 +40,8 @@ impl FluidResources {
             blocks_flow: facts
                 .states
                 .iter()
-                .map(|s| assets.blocks_fluid_flow.contains(&*s.name))
+                .enumerate()
+                .map(|(id, s)| assets.blocks_flow(id, &s.name))
                 .collect(),
             ice: facts
                 .states
