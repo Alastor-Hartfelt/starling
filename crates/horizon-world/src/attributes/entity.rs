@@ -49,7 +49,11 @@ impl Catalog {
     /// Imports a version-checked export of registered definitions and actual
     /// DefaultAttributes suppliers. Defaults contain base values, not instances.
     pub fn from_json(v: &Value) -> io::Result<Self> {
-        if v["data_version"].as_i64() != Some(i64::from(DATA_VERSION)) {
+        Self::from_versioned_json(v, DATA_VERSION)
+    }
+
+    pub fn from_versioned_json(v: &Value, data_version: i32) -> io::Result<Self> {
+        if v["data_version"].as_i64() != Some(i64::from(data_version)) {
             return Err(invalid("attribute catalog data version mismatch"));
         }
         let mut attributes = Vec::new();

@@ -93,6 +93,10 @@ pub struct HealthResources {
 }
 impl HealthResources {
     pub fn load(root: &Path) -> Result<Self> {
+        Self::load_versioned(root, horizon_world::DATA_VERSION)
+    }
+
+    pub(crate) fn load_versioned(root: &Path, data_version: i32) -> Result<Self> {
         let read = |name: &str| -> Result<serde_json::Value> {
             Ok(serde_json::from_slice(&fs::read(root.join(name))?)?)
         };
@@ -102,7 +106,11 @@ impl HealthResources {
                 ids[name].as_u64().ok_or("missing player float ID")?,
             )?)
         };
-        let damage = Catalog::from_json(&read("damage-catalog.json")?, &read("damage-tags.json")?)?;
+        let damage = Catalog::from_versioned_json(
+            &read("damage-catalog.json")?,
+            &read("damage-tags.json")?,
+            data_version,
+        )?;
         for name in ["minecraft:fall", "minecraft:stalagmite", "minecraft:starve"] {
             if damage.id(name).is_none() {
                 return Err(format!("missing damage type {name}").into());

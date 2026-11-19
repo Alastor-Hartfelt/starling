@@ -51,7 +51,15 @@ impl Catalog {
     /// Imports native decoded definitions and resolves raw tag resources with
     /// the shared tag implementation. No data-pack or network IDs are invented.
     pub fn from_json(v: &Value, resources: &Value) -> io::Result<Self> {
-        if v["data_version"].as_i64() != Some(i64::from(DATA_VERSION)) {
+        Self::from_versioned_json(v, resources, DATA_VERSION)
+    }
+
+    pub fn from_versioned_json(
+        v: &Value,
+        resources: &Value,
+        data_version: i32,
+    ) -> io::Result<Self> {
+        if v["data_version"].as_i64() != Some(i64::from(data_version)) {
             return Err(invalid("damage catalog data version mismatch"));
         }
         let mut definitions = Vec::new();

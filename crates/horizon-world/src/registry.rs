@@ -72,7 +72,8 @@ impl BlockRegistry {
         Ok(registry)
     }
 
-    pub(crate) fn data_version(&self) -> i32 {
+    /// DataVersion of the prepared tables bound to these block-state IDs.
+    pub fn data_version(&self) -> i32 {
         self.data_version
     }
 

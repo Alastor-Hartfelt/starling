@@ -1697,6 +1697,9 @@ impl<'a, 'w> MobRestitution<'a, 'w> {
     }
 }
 impl RestitutionWorld for MobRestitution<'_, '_> {
+    fn uses_block_landing_12111(&self) -> bool {
+        self.world.movement.data_version() == 4671
+    }
     // The block data cannot fail here: a state the registry does not know
     // reads as a block with no bounce, never as an error.
     type Error = ();

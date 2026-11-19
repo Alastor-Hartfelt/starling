@@ -14,6 +14,9 @@ pub struct RestitutionInput {
 }
 pub trait RestitutionWorld {
     type Error;
+    fn uses_block_landing_12111(&self) -> bool {
+        false
+    }
     fn suppressing_bounce(&mut self) -> Result<bool, Self::Error>;
     fn entity_bounciness(&mut self) -> Result<f64, Self::Error>;
     fn velocity(&mut self) -> Result<Vec3, Self::Error>;
@@ -50,6 +53,22 @@ pub fn restitute_movement<W: RestitutionWorld>(
     world: &mut W,
     input: RestitutionInput,
 ) -> Result<(), W::Error> {
+    if world.uses_block_landing_12111() {
+        let mut velocity = world.velocity()?;
+        if input.collided_x {
+            velocity.x = 0.0;
+        }
+        if input.collided_z {
+            velocity.z = 0.0;
+        }
+        if input.vertical_collision {
+            let bounce = world.block_bounce_restitution(input.block)?;
+            let suppressed = bounce != 0.0 && world.suppressing_bounce()?;
+            velocity.y = block_landing_velocity_12111(velocity.y, bounce, suppressed, input.living);
+        }
+        return world.set_velocity(velocity);
+    }
+
     let mut bounce = if world.suppressing_bounce()? {
         0.0
     } else {
@@ -97,4 +116,37 @@ pub fn restitute_movement<W: RestitutionWorld>(
         world.mark_position_for_sync();
     }
     world.set_velocity(velocity)
+}
+
+// The 1.21.11 block callback acts directly on velocity, including very small falls.
+fn block_landing_velocity_12111(y: f64, bounce: f32, suppressed: bool, living: bool) -> f64 {
+    if bounce == 0.0 || suppressed {
+        y * 0.0
+    } else if y < 0.0 {
+        -y * f64::from(bounce) * if living { 1.0 } else { 0.8 }
+    } else {
+        y
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_block_callbacks_handle_beds_slime_and_sneaking() {
+        assert_eq!(block_landing_velocity_12111(-0.01, 1.0, false, true), 0.01);
+        assert_eq!(block_landing_velocity_12111(-1.0, 1.0, false, false), 0.8);
+        assert_eq!(
+            block_landing_velocity_12111(-1.0, 0.66, false, false),
+            0.528000020980835
+        );
+        assert_eq!(block_landing_velocity_12111(0.5, 0.66, false, true), 0.5);
+        for (block, sneak) in [(0.0, false), (1.0, true), (0.66, true)] {
+            assert_eq!(
+                block_landing_velocity_12111(-1.0, block, sneak, true).to_bits(),
+                (-0.0_f64).to_bits()
+            );
+        }
+    }
 }

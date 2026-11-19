@@ -92,9 +92,11 @@ impl MotionResources {
         assets: &Assets,
         facts: &crate::blocks::BlockFacts,
     ) -> Result<Self> {
-        let attributes = Arc::new(Catalog::from_json(&serde_json::from_slice(&fs::read(
-            root.join("attributes.json"),
-        )?)?)?);
+        let version = assets.registry.data_version();
+        let attributes = Arc::new(Catalog::from_versioned_json(
+            &serde_json::from_slice(&fs::read(root.join("attributes.json"))?)?,
+            version,
+        )?);
         let file = BlockTableFile::open(&root.join("movement-properties.nbt"), assets.registry)?;
         let properties = MovementProperties::from_table(file.table("movement")?)?;
         let bundle: BTreeMap<String, String> =
@@ -125,13 +127,17 @@ impl MotionResources {
         )?;
         Ok(Self {
             landing: crate::landing::load(root, &properties)?,
-            health: crate::health::HealthResources::load(root)?,
+            health: crate::health::HealthResources::load_versioned(root, version)?,
             fluids: FluidResources::new(assets, facts)?,
             attributes,
             blocks: properties.bind(&MovementTags {
                 fences: tag("minecraft:fences")?,
                 walls: tag("minecraft:walls")?,
-                suppresses_bounce: tag("minecraft:suppresses_bounce")?,
+                suppresses_bounce: if version == 4671 {
+                    BTreeSet::new()
+                } else {
+                    tag("minecraft:suppresses_bounce")?
+                },
             })?,
             climbable: tag("minecraft:climbable")?,
             soul_speed_blocks: tag("minecraft:soul_speed_blocks")?,
@@ -2679,6 +2685,9 @@ impl MovementEmissionWorld for MotionWorld<'_, '_, '_> {
     }
 }
 impl RestitutionWorld for MotionWorld<'_, '_, '_> {
+    fn uses_block_landing_12111(&self) -> bool {
+        self.resources.blocks.data_version() == 4671
+    }
     type Error = Box<dyn std::error::Error>;
     fn suppressing_bounce(&mut self) -> Result<bool> {
         Ok(self.player.shift_key_down)

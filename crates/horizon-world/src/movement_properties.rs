@@ -127,13 +127,21 @@ impl<'r> MovementProperties<'r> {
                 }
             })
             .collect();
-        Ok(BoundMovementProperties { states })
+        Ok(BoundMovementProperties {
+            states,
+            data_version: self.registry.data_version(),
+        })
     }
 }
 pub struct BoundMovementProperties {
+    data_version: i32,
     states: Vec<MovementBlock>,
 }
 impl BoundMovementProperties {
+    pub fn data_version(&self) -> i32 {
+        self.data_version
+    }
+
     pub fn get(&self, state: BlockStateId) -> io::Result<MovementBlock> {
         self.states
             .get(state.0 as usize)
