@@ -51,7 +51,7 @@ public final class VanillaCollisionOracle {
 
     private static final StateCodec STATE_CODEC = StateCodec.load();
 
-    private static Tag encode(BlockState state) {
+    static Tag encode(BlockState state) {
         if (!REUSE) return STATE_CODEC.encode(state);
         return encodedStates.computeIfAbsent(state, STATE_CODEC::encode).copy();
     }

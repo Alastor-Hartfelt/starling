@@ -1,7 +1,6 @@
 //! Immutable block-definition flags and legacy solidity calculated from cached
 //! collision shapes. Replacement with an item/fluid context is separate behavior.
 use crate::{
-    DATA_VERSION,
     collision::CachedCollisionRegistry,
     compression::invalid,
     nbt::Tag,
@@ -130,7 +129,7 @@ impl<'r> BlockPropertiesRegistry<'r> {
             ));
         }
         let tag = table.tag();
-        if tag.get("DataVersion") != Some(&Tag::Int(DATA_VERSION)) {
+        if tag.get("DataVersion") != Some(&Tag::Int(registry.data_version())) {
             return Err(invalid("block properties DataVersion mismatch"));
         }
         let Some(Tag::Compound(blocks)) = tag.get("blocks") else {
