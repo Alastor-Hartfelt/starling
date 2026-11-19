@@ -48,6 +48,9 @@ jobs:
           echo "64bb6d763bed0a9f1d632ec347938594144943ed  $jar" | sha1sum --check
           python3 tools/radio_12111_smoke.py "$jar" target/debug/examples/radio_12111_probe
 
+      - name: Compare Rust terrain facts with the official 1.21.11 registry
+        run: python3 tools/radio_12111_heightmaps.py
+
   protocol-baseline:
     name: Check inherited Rust protocol crate
     runs-on: ubuntu-latest

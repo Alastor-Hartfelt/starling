@@ -27,6 +27,14 @@ This uses the launcher profile from [Mojang's 1.21.11 release notes](https://fee
 
 The initial JDK 21 audit of the resource exporters against those JARs found 75 server-side errors and 26 client-side errors. Server-side blockers include changed world constructors, registry interfaces, and command APIs. The original client build also pulled in a 26.3 model parity probe that the production exporter does not need. Splitting the blockstate schema export from that probe allows the entire client exporter bundle to compile against 1.21.11. The Rust asset loader accepted all 1,168 blockstate definitions in the official client JAR with the exported schemas. The mob-data and gameplay-facts exporters now compile and run against those JARs. Their 1.21.11 output covers all 29,671 block states and all 157 entity spawn placement entries. The collision exporter also generates the 1.21.11 registry and cached collision tables. The Rust loaders validated 29,671 states and 29,492 cached shapes by state, using DataVersion 4671 and rejecting mismatched table versions. The creative inventory exporter can also load the 1.21.11 registry layers. Radio read the resulting tab and search data using its existing Rust creative inventory loader. Validate the remaining exporter outputs against the Rust loader and test single-player world creation, saving, and reopening before changing the engine pin.
 
+The native block registry now carries its game version through the local cache. Multiplayer chunks, individual and batched block updates, and falling blocks select block-state IDs for the loaded registry. The two-client headless test runs one client with each registry and teleports the native-registry client to the Nether.
+
+The official 1.21.11 release defines ocean-floor and no-leaves heightmaps per state. Its fluid-flow calculation uses the same motion predicate as the ocean floor. To check all 29,671 states through the Rust terrain asset loader, including waterlogged leaves, run the following with JDK 21 and Rust installed.
+
+```sh
+python3 tools/radio_12111_heightmaps.py
+```
+
 ## Reproduce the multiplayer tests
 
 Use Rust stable, Python 3, Java 21 or newer, and the Mojang 1.21.11 server jar. The baseline workflow downloads the jar and verifies its SHA-1. The full client also needs prepared 26.3 resources. Follow the source build instructions in the [README](../README.md) to prepare them with JDK 25.
