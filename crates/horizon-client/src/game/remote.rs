@@ -1038,13 +1038,18 @@ impl Game<'_> {
             Some(pipe) => {
                 Session::connect_local(pipe, name, info.clone(), lang.clone(), root.clone())
             }
-            None if radio_12111 => Session::connect_radio_12111(
+            None if radio_12111 => Session::connect_radio_12111_with_blocks(
                 address,
                 name,
                 auth.clone(),
                 info.clone(),
                 lang.clone(),
                 root.clone(),
+                if self.pack.assets.registry.data_version() == 4671 {
+                    horizon_protocol::radio_12111::BlockStateTarget::Native12111
+                } else {
+                    horizon_protocol::radio_12111::BlockStateTarget::Engine26_3
+                },
             ),
             None => {
                 self.extras_connecting(address, name, lan);
@@ -1159,6 +1164,7 @@ impl Game<'_> {
                     }
                 };
             });
+        let block_target = session.radio_block_target();
         self.remote = Some(Remote {
             session,
             brand: "unknown".into(),
@@ -1189,7 +1195,7 @@ impl Game<'_> {
                     Vec::new(),
                     7,
                 )
-                .with_radio_12111(radio_12111),
+                .with_radio_12111(block_target),
             ),
             decoder: ChunkDecoder::new(),
             view_distance: self.settings.render_distance,
@@ -2530,7 +2536,7 @@ impl Game<'_> {
             r.chunk_format = Arc::new(
                 ChunkFormat::new(&r.dimension, biomes, bits)
                     .in_column(column)
-                    .with_radio_12111(r.session.is_radio_12111()),
+                    .with_radio_12111(r.session.radio_block_target()),
             );
             r.registries = registries;
         }

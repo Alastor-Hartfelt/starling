@@ -11,7 +11,7 @@ use horizon_core::paletted::{PalettedContainer, Strategy};
 use horizon_protocol::{
     chunk::{LightData, Paletted, SectionLight},
     packets::play::{self, Clientbound as C},
-    radio_12111::{decode_chunk_sections, remap_block_palette},
+    radio_12111::{BlockStateTarget, decode_chunk_sections},
     registry::DimensionType,
 };
 use horizon_world::attachments::Holder;
@@ -33,7 +33,7 @@ pub(super) struct ChunkFormat {
     has_skylight: bool,
     biome_map: Vec<u16>,
     biome_bits: u8,
-    radio_12111: bool,
+    radio_12111: Option<BlockStateTarget>,
 }
 
 impl ChunkFormat {
@@ -45,14 +45,14 @@ impl ChunkFormat {
             has_skylight: dimension.has_skylight,
             biome_map,
             biome_bits,
-            radio_12111: false,
+            radio_12111: None,
         }
     }
     /// Decodes into chunks of `column`.
     pub(super) fn in_column(self, column: ColumnLayout) -> Self {
         Self { column, ..self }
     }
-    pub(super) fn with_radio_12111(self, radio_12111: bool) -> Self {
+    pub(super) fn with_radio_12111(self, radio_12111: Option<BlockStateTarget>) -> Self {
         Self {
             radio_12111,
             ..self
@@ -73,12 +73,12 @@ impl ChunkFormat {
 
     /// LevelChunkSection data into the client's column.
     fn column(&self, p: &play::LevelChunkWithLight) -> Result<Chunk, String> {
-        let sections: Vec<(Paletted, Paletted)> = if self.radio_12111 {
+        let sections: Vec<(Paletted, Paletted)> = if let Some(blocks) = self.radio_12111 {
             decode_chunk_sections(&p.chunk.buffer, self.sections, self.biome_bits).and_then(
                 |sections| {
                     sections
                         .into_iter()
-                        .map(|s| Ok((remap_block_palette(s.states)?, s.biomes)))
+                        .map(|s| Ok((blocks.palette(s.states)?, s.biomes)))
                         .collect()
                 },
             )

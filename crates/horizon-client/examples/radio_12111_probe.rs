@@ -4,7 +4,7 @@ use horizon_client_lib::net::{Event, Session};
 use horizon_protocol::{
     crypto::offline_uuid,
     packets::{Empty, configuration, play},
-    radio_12111::{decode_chunk_sections, remap_block_palette},
+    radio_12111::{BlockStateTarget, decode_chunk_sections},
     registry::{Dynamic, ceil_log2},
     text::Language,
 };
@@ -148,7 +148,10 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
                                 format!("chunk ({}, {}) in {}: {e}", p.x, p.z, level.name)
                             })?;
                     for section in sections {
-                        remap_block_palette(section.states)?;
+                        session
+                            .radio_block_target()
+                            .ok_or("missing block registry")?
+                            .palette(section.states)?;
                     }
                     level.saw_chunk = true;
                     chunks += 1;
@@ -224,17 +227,24 @@ fn main() -> ProbeResult<()> {
     };
     let name = args.next().unwrap_or_else(|| "RadioProbe".into());
     let peer = args.next().map(|name| offline_uuid(&name));
+    let blocks = match args.next().as_deref() {
+        None => BlockStateTarget::Engine26_3,
+        Some("--native-blocks") => BlockStateTarget::Native12111,
+        Some(_) => return Err("unexpected block registry option".into()),
+    };
+    println!("Testing block registry {blocks:?}");
     if args.next().is_some() {
         return Err("unexpected arguments after peer name".into());
     }
     run(
-        &Session::connect_radio_12111(
+        &Session::connect_radio_12111_with_blocks(
             &address,
             &name,
             None,
             configuration::ClientInformation::new(3),
             Arc::new(Language::new()),
             Default::default(),
+            blocks,
         ),
         require_nether,
         peer,

@@ -17,15 +17,15 @@ from pathlib import Path
 
 def run_probe(probe, address, server, log):
     scenarios = [
-        ("RadioProbe", "RadioPeer", "--require-nether", log),
-        ("RadioPeer", "RadioProbe", "--overworld", log.with_name("peer.log")),
+        ("RadioProbe", "RadioPeer", "--require-nether", log, ["--native-blocks"]),
+        ("RadioPeer", "RadioProbe", "--overworld", log.with_name("peer.log"), []),
     ]
     with ExitStack() as stack:
         clients = []
-        for name, peer, mode, path in scenarios:
+        for name, peer, mode, path, options in scenarios:
             output = stack.enter_context(path.open("w"))
             client = stack.enter_context(subprocess.Popen(
-                [probe, address, mode, name, peer], stdout=output, stderr=subprocess.STDOUT,
+                [probe, address, mode, name, peer, *options], stdout=output, stderr=subprocess.STDOUT,
             ))
             clients.append(client)
             stack.callback(client.kill)
@@ -41,14 +41,14 @@ def run_probe(probe, address, server, log):
                 if time.monotonic() >= deadline:
                     raise RuntimeError("two-player probe timed out")
                 if not crossed:
-                    logs = [path.read_text(errors="replace") for _, _, _, path in scenarios]
+                    logs = [path.read_text(errors="replace") for _, _, _, path, _ in scenarios]
                     if all("ready in minecraft:overworld" in text and "peer listed" in text
                            for text in logs):
                         server_command(server, "execute in minecraft:the_nether run teleport RadioProbe 0 128 0")
                         crossed = True
                 time.sleep(0.25)
         finally:
-            for _, _, _, path in scenarios:
+            for _, _, _, path, _ in scenarios:
                 print(path.read_text(errors="replace"), end="")
 
 

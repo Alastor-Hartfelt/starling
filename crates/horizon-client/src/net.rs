@@ -104,14 +104,14 @@ pub enum Event {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Wire {
     Current,
-    Radio12111,
+    Radio12111(radio_12111::BlockStateTarget),
 }
 
 impl Wire {
     fn version(self) -> ServerVersion {
         match self {
             Self::Current => ServerVersion::Current,
-            Self::Radio12111 => ServerVersion::V1_21_11,
+            Self::Radio12111(_) => ServerVersion::V1_21_11,
         }
     }
 
@@ -135,7 +135,7 @@ impl Wire {
         writer: &mut ConnWriter,
         packet: play::Serverbound,
     ) -> horizon_protocol::Result<()> {
-        if self == Self::Radio12111 {
+        if matches!(self, Self::Radio12111(_)) {
             match packet {
                 play::Serverbound::AcceptTeleportation(p) => {
                     writer.send(&radio_12111::encode_teleport_ack(p.id))?;
@@ -191,9 +191,9 @@ impl Wire {
         payload: &[u8],
     ) -> horizon_protocol::Result<Option<play::Clientbound>> {
         use ids::play::clientbound as canonical;
-        if self == Self::Current {
+        let Self::Radio12111(blocks) = self else {
             return play::Clientbound::decode(id, payload).map(Some);
-        }
+        };
         let packet = match id {
             canonical::LOGIN => {
                 let p = radio_12111::decode_play_login(payload)?;
@@ -228,7 +228,7 @@ impl Wire {
                 else {
                     unreachable!();
                 };
-                p.state = radio_12111::block_state_to_engine(p.state).ok_or_else(|| {
+                p.state = blocks.state(p.state).ok_or_else(|| {
                     horizon_protocol::Error::new("unknown 1.21.11 block update state")
                 })?;
                 play::Clientbound::BlockUpdate(p)
@@ -257,7 +257,7 @@ impl Wire {
                 for update in &mut p.changes {
                     let state = i32::try_from(*update >> 12)
                         .ok()
-                        .and_then(radio_12111::block_state_to_engine)
+                        .and_then(|id| blocks.state(id))
                         .ok_or_else(|| {
                             horizon_protocol::Error::new("unknown 1.21.11 section update state")
                         })?;
@@ -270,7 +270,9 @@ impl Wire {
                 else {
                     unreachable!();
                 };
-                play::Clientbound::AddEntity(radio_12111::remap_entity_spawn(p)?)
+                play::Clientbound::AddEntity(radio_12111::remap_entity_spawn_with_blocks(
+                    p, blocks,
+                )?)
             }
             canonical::ENTITY_POSITION_SYNC => play::Clientbound::EntityPositionSync(
                 radio_12111::decode_entity_position_sync(payload)?,
@@ -365,6 +367,26 @@ impl Session {
         lang: Arc<Language>,
         resources: PathBuf,
     ) -> Self {
+        Self::connect_radio_12111_with_blocks(
+            address,
+            name,
+            auth,
+            info,
+            lang,
+            resources,
+            radio_12111::BlockStateTarget::Engine26_3,
+        )
+    }
+
+    pub fn connect_radio_12111_with_blocks(
+        address: &str,
+        name: &str,
+        auth: Option<Arc<AuthSession>>,
+        info: cfg::ClientInformation,
+        lang: Arc<Language>,
+        resources: PathBuf,
+        blocks: radio_12111::BlockStateTarget,
+    ) -> Self {
         Self::start(
             address,
             name,
@@ -375,13 +397,20 @@ impl Session {
             None,
             resources,
             false,
-            Wire::Radio12111,
+            Wire::Radio12111(blocks),
         )
     }
 
     /// This session's chunk buffers use the 1.21.11 section format.
     pub fn is_radio_12111(&self) -> bool {
-        self.wire == Wire::Radio12111
+        self.radio_block_target().is_some()
+    }
+
+    pub fn radio_block_target(&self) -> Option<radio_12111::BlockStateTarget> {
+        match self.wire {
+            Wire::Current => None,
+            Wire::Radio12111(blocks) => Some(blocks),
+        }
     }
 
     /// `ClientHandshakePacketListenerImpl.handleHello`: LAN entries can continue
@@ -941,7 +970,7 @@ fn run(
     .map_err(e)?;
     let profile = loop {
         let (id, payload) = c.recv().map_err(e)?;
-        if wire == Wire::Radio12111 && id == ids::login::clientbound::LOGIN_FINISHED {
+        if matches!(wire, Wire::Radio12111(_)) && id == ids::login::clientbound::LOGIN_FINISHED {
             let profile = radio_12111::decode_login_finished(&payload)
                 .map_err(e)?
                 .profile;
@@ -1125,7 +1154,7 @@ fn receive_play(
         match packet {
             play::Clientbound::KeepAlive(k) => {
                 reply(play::Serverbound::KeepAlive(k.clone()))?;
-                if wire == Wire::Radio12111 {
+                if matches!(wire, Wire::Radio12111(_)) {
                     let _ = send.send(Event::Packet(Box::new(play::Clientbound::KeepAlive(k))));
                 }
             }
@@ -1551,16 +1580,19 @@ mod tests {
         .encode();
         let mut body = Reader::new(&raw);
         let id = body.varint().unwrap();
-        let packet = Wire::Radio12111
-            .decode_play(id, body.rest())
-            .unwrap()
-            .unwrap();
-        let play::Clientbound::SectionBlocksUpdate(update) = packet else {
-            panic!("expected section block update");
-        };
-        assert_eq!(update.section, [-2, 4, 5]);
-        // Default oak leaves move from 279 to 294; stone stays at 1.
-        assert_eq!(update.changes, [(294 << 12) | 0xF71, 1 << 12]);
+        let payload = body.rest();
+        use radio_12111::BlockStateTarget::{Engine26_3, Native12111};
+        for (target, leaves) in [(Engine26_3, 294), (Native12111, 279)] {
+            let packet = Wire::Radio12111(target)
+                .decode_play(id, payload)
+                .unwrap()
+                .unwrap();
+            let play::Clientbound::SectionBlocksUpdate(update) = packet else {
+                panic!("expected section block update");
+            };
+            assert_eq!(update.section, [-2, 4, 5]);
+            assert_eq!(update.changes, [(leaves << 12) | 0xF71, 1 << 12]);
+        }
     }
 
     #[test]

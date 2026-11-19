@@ -7,7 +7,7 @@ mod item_types;
 use crate::{
     Result,
     buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Reader, UByte, VarInt, Vec3d, Writer},
-    chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy, pack},
+    chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy},
     ids,
     item::{Component, Hashed, Stack, component},
     packet,
@@ -142,9 +142,17 @@ pub fn decode_respawn(payload: &[u8]) -> Result<Respawn12111> {
 
 /// Translate a 1.21.11 spawn to the engine's entity registry. A falling
 /// block also carries a block state ID in its spawn data.
-pub fn remap_entity_spawn(mut spawn: play::AddEntity) -> Result<play::AddEntity> {
+pub fn remap_entity_spawn(spawn: play::AddEntity) -> Result<play::AddEntity> {
+    remap_entity_spawn_with_blocks(spawn, BlockStateTarget::Engine26_3)
+}
+
+pub fn remap_entity_spawn_with_blocks(
+    mut spawn: play::AddEntity,
+    target: BlockStateTarget,
+) -> Result<play::AddEntity> {
     if spawn.kind == entity_types::FALLING_BLOCK {
-        spawn.data = block_state_to_engine(spawn.data)
+        spawn.data = target
+            .state(spawn.data)
             .ok_or_else(|| crate::Error::new("unknown 1.21.11 falling block state"))?;
     }
     spawn.kind = usize::try_from(spawn.kind)
@@ -358,6 +366,45 @@ pub fn block_state_to_engine(id: i32) -> Option<i32> {
         .map(i32::from)
 }
 
+/// Registry used by the loaded block models and collision tables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockStateTarget {
+    Native12111,
+    Engine26_3,
+}
+
+impl BlockStateTarget {
+    pub fn state(self, source: i32) -> Option<i32> {
+        match self {
+            Self::Native12111 => (0..block_state_ranges::SOURCE_LEN as i32)
+                .contains(&source)
+                .then_some(source),
+            Self::Engine26_3 => block_state_to_engine(source),
+        }
+    }
+
+    pub fn palette(self, blocks: Paletted) -> Result<Paletted> {
+        if self == Self::Engine26_3 {
+            return remap_block_palette(blocks);
+        }
+        // The native registry uses the packet's exact packing. Still validate
+        // the server-supplied IDs before handing the storage to the renderer.
+        if blocks.palette.is_empty() {
+            if blocks.bits != block_state_ranges::SOURCE_BITS
+                || blocks.data.len() != crate::chunk::storage_len(blocks.bits, BLOCKS)
+            {
+                return Err(crate::Error::new("invalid 1.21.11 direct block palette"));
+            }
+            if (0..BLOCKS).any(|index| self.state(blocks.get(index)).is_none()) {
+                return Err(crate::Error::new("unknown 1.21.11 direct block state"));
+            }
+        } else if blocks.palette.iter().any(|&id| self.state(id).is_none()) {
+            return Err(crate::Error::new("unknown 1.21.11 palette state"));
+        }
+        Ok(blocks)
+    }
+}
+
 /// Translate a decoded block palette into 26.3 IDs. Indirect palettes keep
 /// their existing indices. Direct palettes are repacked at the engine width.
 pub fn remap_block_palette(mut blocks: Paletted) -> Result<Paletted> {
@@ -371,11 +418,22 @@ pub fn remap_block_palette(mut blocks: Paletted) -> Result<Paletted> {
         {
             return Err(crate::Error::new("invalid 1.21.11 direct block palette"));
         }
-        let values = (0..BLOCKS)
-            .map(|index| remap(blocks.get(index)))
-            .collect::<Result<Vec<_>>>()?;
-        blocks.bits = block_state_ranges::TARGET_BITS;
-        blocks.data = pack(&values, blocks.bits, |&id| id as u64);
+        // Both registries fit four entries per long. Translate one word at a
+        // time, ignoring the four padding bits in each incoming 15-bit word.
+        const SRC: u8 = block_state_ranges::SOURCE_BITS;
+        const DST: u8 = block_state_ranges::TARGET_BITS;
+        const PER_WORD: u8 = 64 / SRC;
+        const { assert!(PER_WORD == 64 / DST && BLOCKS % PER_WORD as usize == 0) };
+        for word in &mut blocks.data {
+            let source = *word as u64;
+            let mut target = 0u64;
+            for slot in 0..PER_WORD {
+                let id = ((source >> (slot * SRC)) & ((1 << SRC) - 1)) as i32;
+                target |= (remap(id)? as u64) << (slot * DST);
+            }
+            *word = target as i64;
+        }
+        blocks.bits = DST;
     } else {
         for id in &mut blocks.palette {
             *id = remap(*id)?;
@@ -673,6 +731,9 @@ mod tests {
             head_yaw: 0,
             data: 279,
         };
+        let native =
+            remap_entity_spawn_with_blocks(spawn.clone(), BlockStateTarget::Native12111).unwrap();
+        assert_eq!((native.kind, native.data), (52, 279));
         let mapped = remap_entity_spawn(spawn).unwrap();
         assert_eq!((mapped.kind, mapped.data), (52, 294));
     }
@@ -729,6 +790,36 @@ mod tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn direct_block_words_ignore_padding_and_translate_all_four_slots() {
+        let mut blocks = Paletted {
+            bits: 15,
+            palette: Vec::new(),
+            data: vec![
+                (0xf000_0000_0000_0000u64 | 1 | (279 << 15) | (280 << 30) | (27 << 45))
+                    as i64;
+                BLOCKS / 4
+            ],
+        };
+        let native = BlockStateTarget::Native12111
+            .palette(blocks.clone())
+            .unwrap();
+        assert_eq!(native.bits, 15);
+        assert_eq!(native.data, blocks.data);
+        let original = blocks.clone();
+        let mapped = remap_block_palette(original).unwrap();
+        for index in 0..BLOCKS {
+            assert_eq!(mapped.get(index), [1, 294, 295, 28][index % 4]);
+        }
+        blocks.data[BLOCKS / 4 - 1] |= (0x7fff_i64) << 45;
+        assert!(
+            BlockStateTarget::Native12111
+                .palette(blocks.clone())
+                .is_err()
+        );
+        assert!(remap_block_palette(blocks).is_err());
     }
 
     #[test]
