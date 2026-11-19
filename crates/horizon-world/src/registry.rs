@@ -67,9 +67,7 @@ impl BlockRegistry {
                 Ok((name, i64::from(*id)))
             })
             .collect::<io::Result<_>>()?;
-        let mut registry = Self::from_states(states, defaults)?;
-        registry.data_version = data_version;
-        Ok(registry)
+        Self::from_states(states, defaults, data_version)
     }
 
     /// DataVersion of the prepared tables bound to these block-state IDs.
@@ -94,16 +92,26 @@ impl BlockRegistry {
                 .map_err(|e| invalid(e.to_string()))?;
         let flags = facts.states.iter().map(|r| (r.air, r.fluid)).collect();
         let states = facts.states.into_iter().map(|r| r.state).collect();
-        Ok((Self::from_states(states, facts.defaults)?, flags))
+        if !matches!(facts.data_version, 4671 | 5023) {
+            return Err(invalid("unsupported block facts DataVersion"));
+        }
+        Ok((
+            Self::from_states(states, facts.defaults, facts.data_version)?,
+            flags,
+        ))
     }
 
-    fn from_states(states: Vec<BlockState>, defaults: BTreeMap<String, i64>) -> io::Result<Self> {
+    fn from_states(
+        states: Vec<BlockState>,
+        defaults: BTreeMap<String, i64>,
+        data_version: i32,
+    ) -> io::Result<Self> {
         if states.is_empty() || states.len() > i32::MAX as usize {
             return Err(invalid("invalid registry size"));
         }
         let mut result = Self {
             states: Vec::with_capacity(states.len()),
-            data_version: DATA_VERSION,
+            data_version,
             ids: HashMap::with_capacity(states.len()),
             collided: BTreeMap::new(),
             defaults: BTreeMap::new(),

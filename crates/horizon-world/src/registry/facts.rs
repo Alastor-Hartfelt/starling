@@ -12,8 +12,15 @@ use std::{cell::RefCell, collections::BTreeMap, fmt};
 
 #[derive(Deserialize)]
 pub(super) struct Facts {
+    // Existing 26.3 resource bundles predate the version field.
+    #[serde(default = "unversioned_facts_version")]
+    pub data_version: i32,
     pub states: Vec<Row>,
     pub defaults: BTreeMap<String, i64>,
+}
+
+fn unversioned_facts_version() -> i32 {
+    5023
 }
 
 /// One `states` row: `[name, air, fluid, description, state, ...]`, keeping

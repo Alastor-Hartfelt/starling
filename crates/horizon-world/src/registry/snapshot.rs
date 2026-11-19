@@ -24,6 +24,7 @@ struct WireState {
 /// Everything `BlockRegistry::from_states` builds, in id order.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Snapshot {
+    data_version: i32,
     /// Every block name and property name and value, in first-use order.
     strings: Vec<String>,
     states: Vec<WireState>,
@@ -89,6 +90,7 @@ pub(crate) fn capture(registry: &BlockRegistry, flags: &[(bool, bool)]) -> Snaps
         .map(|(name, id)| (strings.get(name.as_str()), id.0))
         .collect();
     Snapshot {
+        data_version: registry.data_version(),
         strings: strings.strings,
         states,
         flags,
@@ -100,6 +102,7 @@ pub(crate) fn capture(registry: &BlockRegistry, flags: &[(bool, bool)]) -> Snaps
 
 pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(bool, bool)>)> {
     let Snapshot {
+        data_version,
         strings,
         states,
         flags,
@@ -187,7 +190,7 @@ pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(boo
     Ok((
         BlockRegistry {
             // Snapshots cache the current engine's facts.json registry.
-            data_version: crate::DATA_VERSION,
+            data_version,
             states,
             ids: id_map,
             collided: collided_map,
@@ -235,6 +238,32 @@ mod tests {
         );
         let key = a.properties.keys().next().unwrap();
         assert!(std::ptr::eq(key, b.properties.keys().next().unwrap()));
+    }
+
+    #[test]
+    fn facts_and_snapshot_preserve_the_game_version() {
+        let plain = r#"{"states":[["minecraft:air",true,false,"","minecraft:air"]],"defaults":{"minecraft:air":0}}"#;
+        assert_eq!(
+            BlockRegistry::from_facts_json(plain.as_bytes())
+                .unwrap()
+                .data_version(),
+            5023
+        );
+        let mut facts: serde_json::Value = serde_json::from_str(plain).unwrap();
+        facts["data_version"] = 4671.into();
+        let (registry, flags) =
+            BlockRegistry::from_facts_json_with_flags(facts.to_string().as_bytes()).unwrap();
+        assert_eq!(registry.data_version(), 4671);
+        let bytes = postcard::to_allocvec(&capture(&registry, &flags)).unwrap();
+        assert_eq!(
+            restore(postcard::from_bytes(&bytes).unwrap())
+                .unwrap()
+                .0
+                .data_version(),
+            4671
+        );
+        facts["data_version"] = 0.into();
+        assert!(BlockRegistry::from_facts_json(facts.to_string().as_bytes()).is_err());
     }
 
     #[test]

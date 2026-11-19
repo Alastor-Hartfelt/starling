@@ -56,6 +56,8 @@ public final class VanillaHeightmapOracle {
         }
         for(var id:new TreeSet<>(BuiltInRegistries.BLOCK.keySet()))
             defaults.addProperty(id.toString(),Block.getId(BuiltInRegistries.BLOCK.getValue(id).defaultBlockState()));
+        int version = net.minecraft.SharedConstants.getCurrentVersion().dataVersion().version();
+        if (version != 5023) result.addProperty("data_version", version);
         result.add("states",states);result.add("defaults",defaults);return result;
     }
     static void bindTags(JsonObject resources) {
