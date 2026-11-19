@@ -1517,16 +1517,53 @@ fn worldgen_bundles(run: &Run) -> Result<(), String> {
     Ok(())
 }
 
+/// A developer's parity run can supply these files only for the server it tested.
+fn parity_blocks_match(root: &Path, dir: &Path, origin: &Value) -> bool {
+    let Ok(report) = read_json(&dir.join("report.json")) else {
+        return false;
+    };
+    let Some(version) = origin.get("minecraft").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(server) = origin.get("server_sha256").and_then(Value::as_str) else {
+        return false;
+    };
+    let tested_server = report
+        .get("references")
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry.get("side").and_then(Value::as_str) == Some("server")
+                    && entry.get("jar_sha256").and_then(Value::as_str) == Some(server)
+            })
+        });
+    if report.get("minecraft").and_then(Value::as_str) != Some(version) || !tested_server {
+        return false;
+    }
+    let Some(fixtures) = report.get("fixtures_sha256") else {
+        return false;
+    };
+    BLOCK_BEHAVIOR_FILES.iter().all(|name| {
+        let file = dir.join(name);
+        let Ok(key) = relative_display(&file, root) else {
+            return false;
+        };
+        let Some(expected) = fixtures.get(&key).and_then(Value::as_str) else {
+            return false;
+        };
+        digest(&file, "sha256").is_ok_and(|actual| actual == expected)
+    })
+}
+
 /// The generator's block behaviour and structure block files, from the server exporter JVM.
 fn worldgen_blocks(run: &Run, worker: usize) -> Result<(), String> {
     let local = &run.local;
     let blocks = run.resources.join("worldgen").join("blocks");
     // Block behavior used by feature placement checks (survival, support, collision).
     // These come from the Java exporters of the simple-block parity run, or a direct export.
-    let all_present = |dir: &Path| BLOCK_BEHAVIOR_FILES.iter().all(|n| dir.join(n).exists());
     let inputs = stamp_inputs(run)?;
     let mut behavior = local.join("rust-simple-block-parity");
-    if !all_present(&behavior) {
+    if !parity_blocks_match(&run.root, &behavior, &run.origin) {
         behavior = local.join("horizon-client-block-behavior");
         let outputs: Vec<PathBuf> = BLOCK_BEHAVIOR_FILES
             .iter()
@@ -1691,6 +1728,44 @@ fn export_block_behavior(run: &Run, worker: usize, export: &Path) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parity_block_cache_must_match_the_game_and_exported_files() {
+        let root = std::env::temp_dir().join(format!("radio-parity-blocks-{}", std::process::id()));
+        let dir = root.join(".local/rust-simple-block-parity");
+        mkdir(&dir).unwrap();
+        let origin =
+            pyjson::loads(r#"{"minecraft":"1.21.11","server_sha256":"server-a"}"#).unwrap();
+        let mut report = pyjson::loads(
+            r#"{"minecraft":"1.21.11","references":[{"side":"server","jar_sha256":"server-a"}]}"#,
+        )
+        .unwrap();
+        let mut fixtures = Value::Object(Vec::new());
+        for name in BLOCK_BEHAVIOR_FILES {
+            let file = dir.join(name);
+            write_text(&file, name).unwrap();
+            fixtures.insert(
+                &relative_display(&file, &root).unwrap(),
+                Value::Str(digest(&file, "sha256").unwrap()),
+            );
+        }
+        report.insert("fixtures_sha256", fixtures);
+        write_json(&dir.join("report.json"), &report).unwrap();
+        assert!(parity_blocks_match(&root, &dir, &origin));
+        for mismatch in [
+            r#"{"minecraft":"26.3","server_sha256":"server-a"}"#,
+            r#"{"minecraft":"1.21.11","server_sha256":"server-b"}"#,
+        ] {
+            assert!(!parity_blocks_match(
+                &root,
+                &dir,
+                &pyjson::loads(mismatch).unwrap()
+            ));
+        }
+        write_text(&dir.join("survival-rules.json"), "{}").unwrap();
+        assert!(!parity_blocks_match(&root, &dir, &origin));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn an_output_in_the_scratch_folder_is_one_folder_however_it_is_named() {
