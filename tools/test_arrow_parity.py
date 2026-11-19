@@ -227,7 +227,7 @@ def main():
     oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaArrowOracle.java'
     helpers = [oracle.with_name(name + '.java') for name in ['VanillaSceneCollisionOracle', 'VanillaRegistryCollisionScanOracle',
         'VanillaHeightmapOracle', 'VanillaCollisionOracle', 'VanillaBlockStateCodecOracle', 'VanillaSuffocationOracle',
-        'VanillaFaceSupportOracle', 'VanillaEntityAttributeOracle', 'VanillaBlockLandingOracle', 'VanillaMovementRegistryOracle', 'VanillaDamageSourceOracle']]
+        'VanillaFaceSupportOracle', 'VanillaEntityAttributeOracle', 'VanillaMotionExporter','VanillaBlockLandingOracle', 'VanillaMovementRegistryOracle', 'VanillaDamageSourceOracle']]
     sources = [Path(__file__), lab.ROOT / 'tools/test_native_client.py', lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'tools/lab.py',
                oracle, *helpers, lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock', lab.ROOT / 'crates/horizon-client/examples/probe/arrow_probe.rs']
     for crate in ['horizon-core', 'horizon-world', 'horizon-assets', 'horizon-client', 'horizon-client-render']:

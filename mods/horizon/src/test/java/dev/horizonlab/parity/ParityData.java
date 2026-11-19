@@ -45,11 +45,11 @@ public final class ParityData {
         var resources = new MultiPackResourceManager(PackType.SERVER_DATA, repo.openAllSelected());
         var layers = RegistryLayer.createRegistryAccess();
         var staticTags = TagLoader.loadTagsForExistingRegistries(resources, layers.getLayer(RegistryLayer.STATIC));
-        var worldLayers = loadWorldRegistries(resources, layers, staticTags);
+        var worldLayers = loadWorldRegistries(resources, layers, staticTags, false);
         var loaded = ReloadableServerRegistries.reload(worldLayers, staticTags, resources, Runnable::run).join();
         loot = new ReloadableServerRegistries.Holder(loaded.lookupWithUpdatedTags());
         lookup = loaded.lookupWithUpdatedTags();
-        applyStaticData(staticTags);
+        applyStaticData(staticTags, lookup);
         access = loaded.layers().compositeAccess();
         ops = RegistryOps.create(NbtOps.INSTANCE, lookup);
         var unsafeField = Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe");
@@ -62,9 +62,9 @@ public final class ParityData {
         unsafe.getClass().getMethod("putObject", Object.class, long.class, Object.class).invoke(unsafe, level, offset, access);
     }
 
-    private static LayeredRegistryAccess<RegistryLayer> loadWorldRegistries(
+    static LayeredRegistryAccess<RegistryLayer> loadWorldRegistries(
             ResourceManager resources, LayeredRegistryAccess<RegistryLayer> layers,
-            List<Registry.PendingTags<?>> staticTags) throws ReflectiveOperationException {
+            List<Registry.PendingTags<?>> staticTags, boolean includeDimensions) throws ReflectiveOperationException {
         java.lang.reflect.Method load;
         try {
             load = RegistryDataLoader.class.getMethod(
@@ -78,7 +78,12 @@ public final class ParityData {
         Executor direct = Runnable::run;
         var world = (RegistryAccess.Frozen) ((CompletableFuture<?>) load.invoke(
             null, resources, context, worldRegistries, direct)).join();
-        return layers.replaceFrom(layer, world);
+        if (!includeDimensions) return layers.replaceFrom(layer, world);
+        var dimensionRegistries = RegistryDataLoader.class.getField("DIMENSION_REGISTRIES").get(null);
+        var dimensionContext = java.util.stream.Stream.concat(context.stream(), world.listRegistries()).toList();
+        var dimensions = (RegistryAccess.Frozen) ((CompletableFuture<?>) load.invoke(
+            null, resources, dimensionContext, dimensionRegistries, direct)).join();
+        return layers.replaceFrom(layer, world, dimensions);
     }
 
     private static LayeredRegistryAccess<RegistryLayer> loadLegacyWorldRegistries(
@@ -98,7 +103,7 @@ public final class ParityData {
         return layers.replaceFrom(dimensions, dimensionData);
     }
 
-    private static void applyStaticData(List<Registry.PendingTags<?>> staticTags)
+    static void applyStaticData(List<Registry.PendingTags<?>> staticTags, HolderLookup.Provider lookup)
             throws ReflectiveOperationException {
         Object initializers;
         try {

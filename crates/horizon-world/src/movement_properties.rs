@@ -1,6 +1,5 @@
 //! Registry-bound block movement coefficients, identities and reloadable tags.
 use crate::{
-    DATA_VERSION,
     compression::invalid,
     movement_support::MovementBlockWorld,
     nbt::Tag,
@@ -58,7 +57,7 @@ impl<'r> MovementProperties<'r> {
     }
     pub fn from_table(table: BlockTable<'_, 'r>) -> io::Result<Self> {
         let (tag, registry) = (table.tag(), table.registry());
-        if tag.get("DataVersion") != Some(&Tag::Int(DATA_VERSION)) {
+        if tag.get("DataVersion") != Some(&Tag::Int(registry.data_version())) {
             return Err(invalid("movement properties DataVersion mismatch"));
         }
         let Some(Tag::Compound(blocks)) = tag.get("blocks") else {

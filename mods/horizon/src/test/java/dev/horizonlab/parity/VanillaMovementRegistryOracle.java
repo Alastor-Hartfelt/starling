@@ -15,19 +15,8 @@ import net.minecraft.world.phys.Vec3;
 /** Exports raw block fields; compares registered movement queries independently. */
 public final class VanillaMovementRegistryOracle {
     static final class Stop extends RuntimeException {}
-    static final String[] PROPERTIES={"friction","speedFactor","jumpFactor","bounceRestitution","fallDistanceReduction"};
     static double number(JsonElement v){return Double.longBitsToDouble(Long.parseUnsignedLong(v.getAsString(),16));}
     static BlockPos position(JsonElement v){var a=v.getAsJsonArray();return new BlockPos(a.get(0).getAsInt(),a.get(1).getAsInt(),a.get(2).getAsInt());}
-    static void export(Path dir)throws Exception {
-        var fields=new Field[PROPERTIES.length];for(int i=0;i<fields.length;i++){fields[i]=BlockBehaviour.class.getDeclaredField(PROPERTIES[i]);fields[i].setAccessible(true);}
-        var states=new ListTag();var defaults=new CompoundTag();var definitions=new CompoundTag();
-        for(var state:Block.BLOCK_STATE_REGISTRY){states.add(BlockState.FULL_CODEC.encodeStart(NbtOps.INSTANCE,state).getOrThrow());if(state==state.getBlock().defaultBlockState())defaults.putInt(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString(),Block.getId(state));}
-        for(var block:BuiltInRegistries.BLOCK){var data=new CompoundTag();for(int i=0;i<fields.length;i++)data.putFloat(PROPERTIES[i],fields[i].getFloat(block));data.putBoolean("fenceGate",block instanceof FenceGateBlock);definitions.put(BuiltInRegistries.BLOCK.getKey(block).toString(),data);}
-        var info=new JsonObject();info.addProperty("states",states.size());var ids=new JsonObject();for(var block:BuiltInRegistries.BLOCK)ids.addProperty(BuiltInRegistries.BLOCK.getKey(block).toString(),Block.getId(block.defaultBlockState()));info.add("defaults",ids);Files.writeString(dir.resolve("registry-info.json"),info.toString());
-        var registry=new CompoundTag();registry.putInt("DataVersion",net.minecraft.SharedConstants.getCurrentVersion().dataVersion().version());registry.put("states",states);registry.put("defaults",defaults);
-        var movement=new CompoundTag();movement.putInt("DataVersion",net.minecraft.SharedConstants.getCurrentVersion().dataVersion().version());movement.put("states",states);movement.put("blocks",definitions);
-        try(var out=new DataOutputStream(Files.newOutputStream(dir.resolve("block-registry.nbt")))){NbtIo.write(registry,out);}try(var out=new DataOutputStream(Files.newOutputStream(dir.resolve("movement-properties.nbt")))){NbtIo.write(movement,out);}
-    }
     static final class Level extends net.minecraft.server.level.ServerLevel {
         JsonObject input;PrintWriter out;int calls;
         private Level(){super(null,null,null,null,null,null,false,0L,List.of(),false);}
@@ -41,7 +30,7 @@ public final class VanillaMovementRegistryOracle {
     public static void main(String[] args)throws Exception {
         net.minecraft.SharedConstants.tryDetectVersion();net.minecraft.server.Bootstrap.bootStrap();Path dir=Path.of(args[1]);
         VanillaHeightmapOracle.bindTags(JsonParser.parseString(Files.readString(dir.resolve("tags.json"))).getAsJsonObject());
-        if(args[0].equals("export")){export(dir);return;}
+        if(args[0].equals("export")){VanillaMotionExporter.movement(dir);return;}
         var registry=BuiltInRegistries.BLOCK;var natural=new HashMap<TagKey<Block>,List<Holder<Block>>>();var all=new ArrayList<Holder<Block>>();
         var tags=List.of(BlockTags.FENCES,BlockTags.WALLS,BlockTags.SUPPRESSES_BOUNCE);
         for(var tag:tags){var values=new ArrayList<Holder<Block>>();for(var block:registry){if(block.defaultBlockState().is(tag))values.add(block.builtInRegistryHolder());}natural.put(tag,values);}for(var block:registry)all.add(block.builtInRegistryHolder());

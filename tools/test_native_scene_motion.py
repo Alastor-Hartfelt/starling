@@ -805,7 +805,7 @@ def main():
     oracle=lab.ROOT/'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSceneMotionOracle.java'
     helpers=[oracle.with_name(name+'.java') for name in ['VanillaSceneCollisionOracle','VanillaRegistryCollisionScanOracle',
         'VanillaHeightmapOracle','VanillaCollisionOracle','VanillaBlockStateCodecOracle','VanillaSuffocationOracle',
-        'VanillaFaceSupportOracle','VanillaEntityAttributeOracle','VanillaBlockLandingOracle','VanillaMovementRegistryOracle','VanillaDamageSourceOracle']]
+        'VanillaFaceSupportOracle','VanillaEntityAttributeOracle','VanillaMotionExporter','VanillaBlockLandingOracle','VanillaMovementRegistryOracle','VanillaDamageSourceOracle']]
     if args.sprint_input:helpers.append(oracle.with_name('VanillaSprintInputOracle.java'))
     sources=[Path(__file__),lab.ROOT/'tools/test_native_client.py',lab.ROOT/'tools/test_rust_parity.py',lab.ROOT/'tools/lab.py',
              lab.ROOT/'tools/prepare_native_client.py',oracle,*helpers,lab.ROOT/'Cargo.toml',lab.ROOT/'Cargo.lock',

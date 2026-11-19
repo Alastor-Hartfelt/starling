@@ -552,7 +552,7 @@ impl Run<'_> {
             .join(if side == 1 { "client" } else { "server" });
         if !matches!(
             main,
-            "VanillaCommandParseOracle" | "VanillaCreativeTabsExporter"
+            "VanillaCommandRegistriesExporter" | "VanillaCreativeTabsExporter"
         ) && std::env::var_os("HORIZON_PREPARE_ISOLATED").is_none()
         {
             let name = ["server", "client", "server-blocks"][worker];
@@ -830,13 +830,9 @@ fn steps(
     let visibility = run.oracle("VanillaFaceVisibilityOracle.java");
     let collision = run.oracle("VanillaCollisionOracle.java");
     let collision_sources = source_hashes(repo, &[&collision])?;
-    let movement = run.oracle("VanillaMovementRegistryOracle.java");
     let attributes = run.oracle("VanillaEntityAttributeOracle.java");
-    let landing = run.oracle("VanillaBlockLandingOracle.java");
-    let motion_sources = source_hashes(
-        repo,
-        &[&movement, &attributes, oracle, &landing, &collision],
-    )?;
+    let landing = run.oracle("VanillaMotionExporter.java");
+    let motion_sources = source_hashes(repo, &[&attributes, oracle, &landing, &collision])?;
     let motion_files = [
         "movement-properties.nbt",
         "attributes.json",
@@ -853,8 +849,8 @@ fn steps(
     ];
     let render_sources = source_hashes(repo, &[&visibility, &collision, oracle])?;
     let render_files = ["render-definitions.json", "occlusion.nbt"];
-    let command_oracle = run.oracle("VanillaCommandParseOracle.java");
-    let command_sources = source_hashes(repo, &[&command_oracle])?;
+    let command_oracle = run.oracle("VanillaCommandRegistriesExporter.java");
+    let command_sources = source_hashes(repo, &[&command_oracle, &run.oracle("ParityData.java")])?;
 
     let split_blocks = pool::jobs() >= SPLIT_BLOCKS_JOBS;
 
@@ -934,7 +930,7 @@ fn steps(
                 "movement and attributes",
                 server_cp,
                 &export.join("classes"),
-                &["VanillaBlockLandingOracle", "VanillaEntityAttributeOracle"],
+                &["VanillaMotionExporter", "VanillaEntityAttributeOracle"],
                 "768M",
                 &["export".into(), arg(&export)],
                 &export.join("export.log"),
@@ -1145,7 +1141,7 @@ fn steps(
                 "command registries",
                 server_cp,
                 &export.join("classes"),
-                &["VanillaCommandParseOracle"],
+                &["VanillaCommandRegistriesExporter"],
                 "1G",
                 &["registries".into(), arg(&export)],
                 &root.join("command-registries-export.log"),

@@ -143,7 +143,7 @@ def main():
         if result.returncode:
             print((build / (name + '.log')).read_text()[-4000:]); sys.exit(f'{name} failed')
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-cp', dependencies, '-d', classes,
-         *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaPackScreenOracle', 'VanillaCommandParseOracle',
+         *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaPackScreenOracle', 'VanillaCommandRegistriesExporter', 'VanillaCommandParseOracle',
                                           'VanillaChatScreenOracle'))], 'compile-java')
     java = ['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies]
     run([*java, 'dev.horizonlab.parity.VanillaCommandParseOracle', 'registries', build], 'registries')

@@ -53,7 +53,7 @@ def main():
             tail = (build / (name + '.log')).read_text(errors='replace')[-2500:]
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
-    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
+    run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath', str(lab.ROOT / 'mods/horizon/src/test/java'), '-cp', str(jars['server']) + os.pathsep + dependency_path, '-d', classes, oracle], 'compile-java')
 
     def java(*arguments):
         run(['java', '-Xmx1G', '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]), 'dev.horizonlab.parity.VanillaCommandParseOracle', *arguments], 'java-' + arguments[0])

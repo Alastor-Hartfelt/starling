@@ -28,7 +28,7 @@ def main():
     classes.mkdir(parents=True, exist_ok=True)
     oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaCommandParseOracle.java'
     path = os.pathsep.join(map(str, [jars['server'], *libraries]))
-    subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-cp', path,
+    subprocess.run(['javac', '--release', str(lock['minecraft']['java_major']), '-proc:none', '-sourcepath', str(lab.ROOT / 'mods/horizon/src/test/java'), '-cp', path,
                     '-d', str(classes), str(oracle)], check=True)
     subprocess.run(['java', '-Xmx1G', '-cp', str(classes) + os.pathsep + path,
                     'dev.horizonlab.parity.VanillaCommandParseOracle', 'tree', str(build), 'ALL'],

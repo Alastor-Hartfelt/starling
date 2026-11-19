@@ -1,5 +1,6 @@
 package dev.horizonlab.parity;
 
+import static dev.horizonlab.parity.VanillaCommandRegistriesExporter.*;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.mojang.brigadier.CommandDispatcher;
@@ -19,7 +20,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
-import java.util.TreeSet;
 import net.minecraft.SharedConstants;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSource;
@@ -29,10 +29,8 @@ import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.Registry;
 import net.minecraft.core.RegistryAccess;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.RegistryDataLoader;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.server.MinecraftServer;
@@ -51,8 +49,6 @@ import net.minecraft.tags.TagLoader;
 import net.minecraft.world.flag.FeatureFlagSet;
 import net.minecraft.world.flag.FeatureFlags;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.phys.Vec2;
 import net.minecraft.world.phys.Vec3;
 
@@ -66,13 +62,6 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class VanillaCommandParseOracle {
     static sun.misc.Unsafe unsafe;
-    static final String[] PLAYERS = {"Player", "Steve", "Alex"};
-    /** ClientSuggestionProvider.getSelectedEntities: the crosshair entity's UUID. */
-    static final String[] SELECTED = {"0b9c6a7e-3d1f-4a2b-9c8d-7e6f5a4b3c2d"};
-    static final String[] TEAMS = {"red", "blue"};
-    static final String[] OBJECTIVES = {"kills", "health", "obj"};
-    static final String[] TRACKED = {"#total", "Steve", "fake"};
-
     static final class Src extends CommandSourceStack {
         final RegistryAccess access;
         final HolderLookup.Provider lookup;
@@ -123,19 +112,14 @@ public final class VanillaCommandParseOracle {
         var resources = new MultiPackResourceManager(PackType.SERVER_DATA, repo.openAllSelected());
         var layers = RegistryLayer.createRegistryAccess();
         var staticTags = TagLoader.loadTagsForExistingRegistries(resources, layers.getLayer(RegistryLayer.STATIC));
-        var context = TagLoader.buildUpdatedLookups(layers.getAccessForLoading(RegistryLayer.WORLD), staticTags);
-        RegistryAccess.Frozen world = RegistryDataLoader.load(resources, context, RegistryDataLoader.WORLD_REGISTRIES, Runnable::run).join();
-        var dims = RegistryDataLoader.load(resources, java.util.stream.Stream.concat(context.stream(), world.listRegistries()).toList(), RegistryDataLoader.DIMENSION_REGISTRIES, Runnable::run).join();
-        var worldLayers = layers.replaceFrom(RegistryLayer.WORLD, world, dims);
+        var worldLayers = ParityData.loadWorldRegistries(resources, layers, staticTags, true);
         var loaded = ReloadableServerRegistries.reload(worldLayers, staticTags, resources, Runnable::run).join();
         // The data pack managers (advancements, functions, recipes) a running server holds.
         var managers = net.minecraft.server.ReloadableServerResources.loadResources(
             resources, worldLayers, staticTags, FeatureFlags.VANILLA_SET, Commands.CommandSelection.INTEGRATED,
             LevelBasedPermissionSet.GAMEMASTER, Runnable::run, Runnable::run).join();
         HolderLookup.Provider lookup = loaded.lookupWithUpdatedTags();
-        var components = BuiltInRegistries.DATA_COMPONENT_INITIALIZERS.build(lookup);
-        staticTags.forEach(Registry.PendingTags::apply);
-        components.forEach(net.minecraft.core.component.DataComponentInitializers.PendingComponents::apply);
+        ParityData.applyStaticData(staticTags, lookup);
         RegistryAccess access = loaded.layers().compositeAccess();
 
         if (args[0].equals("registries")) {
@@ -273,154 +257,4 @@ public final class VanillaCommandParseOracle {
             new net.minecraft.resources.FileToIdConverter("structure", ".nbt"));
     }
 
-    static void exportRegistries(Path out, RegistryAccess access, HolderLookup.Provider lookup, net.minecraft.server.packs.repository.PackRepository repo, MultiPackResourceManager resources, net.minecraft.server.ReloadableServerResources managers) throws Exception {
-        JsonObject o = new JsonObject();
-        Set<String> learnable = new TreeSet<>();
-        lookup.lookupOrThrow(Registries.RECIPE).listElements().filter(h -> !h.value().isSpecial()).forEach(h -> learnable.add(h.key().identifier().toString()));
-        JsonArray learnableArr = new JsonArray();
-        learnable.forEach(learnableArr::add);
-        o.add("learnable_recipes", learnableArr);
-        JsonObject criteria = new JsonObject();
-        managers.getAdvancements().getAllAdvancements().stream()
-            .sorted(java.util.Comparator.comparing(a -> a.id().toString()))
-            .forEach(a -> {
-                JsonArray names = new JsonArray();
-                new TreeSet<>(a.value().criteria().keySet()).forEach(names::add);
-                criteria.add(a.id().toString(), names);
-            });
-        o.add("advancement_criteria", criteria);
-        JsonArray blockEntities = new JsonArray();
-        for (Block block : BuiltInRegistries.BLOCK) {
-            if (FeatureFlags.VANILLA_SET.isSubsetOf(block.requiredFeatures()) && block.defaultBlockState().hasBlockEntity())
-                blockEntities.add(BuiltInRegistries.BLOCK.getKey(block).toString());
-        }
-        o.add("block_entities", blockEntities);
-        Set<String> persistent = new TreeSet<>();
-        for (var entry : BuiltInRegistries.DATA_COMPONENT_TYPE.entrySet())
-            if (!entry.getValue().isTransient()) persistent.add(entry.getKey().identifier().toString());
-        JsonArray persistentArr = new JsonArray();
-        persistent.forEach(persistentArr::add);
-        o.add("persistent_components", persistentArr);
-        JsonObject blockTagMembers = new JsonObject();
-        lookup.lookupOrThrow(Registries.BLOCK).listTags().sorted(java.util.Comparator.comparing(t -> t.key().location().toString())).forEach(tag -> {
-            JsonArray members = new JsonArray();
-            tag.forEach(holder -> members.add(holder.unwrapKey().orElseThrow().identifier().toString()));
-            blockTagMembers.add(tag.key().location().toString(), members);
-        });
-        o.add("block_tag_members", blockTagMembers);
-        JsonArray selected = new JsonArray();
-        repo.getSelectedIds().forEach(selected::add);
-        o.add("datapacks_selected", selected);
-        JsonArray available = new JsonArray();
-        repo.getAvailableIds().forEach(available::add);
-        o.add("datapacks_available", available);
-        JsonArray enableable = new JsonArray();
-        repo.getAvailablePacks().stream().filter(p -> p.getRequestedFeatures().isSubsetOf(FeatureFlags.VANILLA_SET))
-            .forEach(p -> enableable.add(p.getId()));
-        o.add("datapacks_enableable", enableable);
-        // ServerClockManager.commandTimeMarkersForClock, from the timelines' markers.
-        java.util.Map<String, Set<String>> markers = new java.util.TreeMap<>();
-        access.lookupOrThrow(Registries.WORLD_CLOCK).listElementIds().forEach(k -> markers.put(k.identifier().toString(), new TreeSet<>()));
-        access.lookupOrThrow(Registries.TIMELINE).listElements().forEach(t -> t.value().registerTimeMarkers((key, marker) -> {
-            if (marker.showInCommands())
-                markers.computeIfAbsent(marker.clock().unwrapKey().orElseThrow().identifier().toString(), x -> new TreeSet<>()).add(key.identifier().toString());
-        }));
-        JsonObject markerObj = new JsonObject();
-        markers.forEach((clock, ids) -> { JsonArray a = new JsonArray(); ids.forEach(a::add); markerObj.add(clock, a); });
-        o.add("clock_time_markers", markerObj);
-        Set<String> templates = new TreeSet<>();
-        templateSource(lookup, resources).list().forEach(id -> templates.add(id.toString()));
-        JsonArray templateArr = new JsonArray();
-        templates.forEach(templateArr::add);
-        o.add("templates", templateArr);
-        JsonArray items = new JsonArray();
-        for (var item : BuiltInRegistries.ITEM) {
-            if (FeatureFlags.VANILLA_SET.isSubsetOf(item.requiredFeatures()))
-                items.add(BuiltInRegistries.ITEM.getKey(item).toString());
-        }
-        o.add("items", items);
-        JsonObject blocks = new JsonObject();
-        for (Block block : BuiltInRegistries.BLOCK) {
-            if (!FeatureFlags.VANILLA_SET.isSubsetOf(block.requiredFeatures())) continue;
-            JsonArray props = new JsonArray();
-            for (Property<?> p : block.getStateDefinition().getProperties()) {
-                JsonArray values = new JsonArray();
-                for (Object v : p.getPossibleValues()) values.add(((Property) p).getName((Comparable) v));
-                JsonArray pair = new JsonArray();
-                pair.add(p.getName());
-                pair.add(values);
-                props.add(pair);
-            }
-            blocks.add(BuiltInRegistries.BLOCK.getKey(block).toString(), props);
-        }
-        o.add("blocks", blocks);
-        o.add("item_tags", tags(lookup, Registries.ITEM));
-        o.add("block_tags", tags(lookup, Registries.BLOCK));
-        JsonArray summonable = new JsonArray();
-        JsonArray types = new JsonArray();
-        for (var type : BuiltInRegistries.ENTITY_TYPE) {
-            if (!FeatureFlags.VANILLA_SET.isSubsetOf(type.requiredFeatures())) continue;
-            String id = BuiltInRegistries.ENTITY_TYPE.getKey(type).toString();
-            types.add(id);
-            if (type.canSummon()) summonable.add(id);
-        }
-        o.add("entity_types", types);
-        o.add("summonable", summonable);
-        o.add("effects", ids(BuiltInRegistries.MOB_EFFECT));
-        o.add("attributes", ids(BuiltInRegistries.ATTRIBUTE));
-        o.add("sounds", ids(BuiltInRegistries.SOUND_EVENT));
-        o.add("enchantments", dynamic(access, Registries.ENCHANTMENT));
-        o.add("structures", dynamic(access, Registries.STRUCTURE));
-        o.add("biomes", dynamic(access, Registries.BIOME));
-        o.add("damage_types", dynamic(access, Registries.DAMAGE_TYPE));
-        o.add("clocks", dynamic(access, Registries.WORLD_CLOCK));
-        o.add("timelines", dynamic(access, Registries.TIMELINE));
-        o.add("dimensions", arr("minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"));
-        o.add("players", arr(PLAYERS));
-        o.add("selected_entities", arr(SELECTED));
-        o.add("teams", arr(TEAMS));
-        o.add("objectives", arr(OBJECTIVES));
-        o.add("tracked", arr(TRACKED));
-        JsonObject by = new JsonObject();
-        lookup.listRegistryKeys().sorted(java.util.Comparator.comparing(k -> k.identifier().toString())).forEach(key -> {
-            var reg = lookup.lookupOrThrow(key);
-            JsonObject entry = new JsonObject();
-            java.util.List<String> ids = reg.listElementIds().map(k -> k.identifier().toString()).sorted().toList();
-            JsonArray idArr = new JsonArray();
-            ids.forEach(idArr::add);
-            entry.add("ids", idArr);
-            JsonArray tagArr = new JsonArray();
-            reg.listTagIds().map(t -> t.location().toString()).sorted().forEach(tagArr::add);
-            entry.add("tags", tagArr);
-            by.add(key.identifier().toString(), entry);
-        });
-        o.add("by_registry", by);
-        Files.writeString(out.resolve("registries.json"), o.toString());
-    }
-
-    static JsonArray arr(String... values) {
-        JsonArray a = new JsonArray();
-        for (String v : values) a.add(v);
-        return a;
-    }
-
-    static <T> JsonArray ids(Registry<T> registry) {
-        Set<String> sorted = new TreeSet<>();
-        for (var key : registry.keySet()) sorted.add(key.toString());
-        JsonArray a = new JsonArray();
-        sorted.forEach(a::add);
-        return a;
-    }
-
-    static <T> JsonArray dynamic(RegistryAccess access, ResourceKey<? extends Registry<T>> key) {
-        return ids(access.lookupOrThrow(key));
-    }
-
-    static <T> JsonArray tags(HolderLookup.Provider lookup, ResourceKey<? extends Registry<T>> key) {
-        Set<String> sorted = new TreeSet<>();
-        lookup.lookupOrThrow(key).listTagIds().forEach(t -> sorted.add(t.location().toString()));
-        JsonArray a = new JsonArray();
-        sorted.forEach(a::add);
-        return a;
-    }
 }

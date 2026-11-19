@@ -4,7 +4,7 @@ use crate::*;
 const SETTINGS: &str = "exporters-v1 --release -proc:none -encoding UTF-8";
 const SERVER: &[&str] = &[
     "VanillaHeightmapOracle",
-    "VanillaBlockLandingOracle",
+    "VanillaMotionExporter",
     "VanillaEntityAttributeOracle",
     "VanillaPlayerHealthOracle",
     "VanillaDamageSourceOracle",
@@ -13,7 +13,7 @@ const SERVER: &[&str] = &[
     "VanillaGameplayFactsExporter",
     "VanillaEntityTypesExporter",
     "VanillaBlockBehaviourExporter",
-    "VanillaCommandParseOracle",
+    "VanillaCommandRegistriesExporter",
     "VanillaCreativeTabsExporter",
     "VanillaWorldgenBlocksExporter",
     "VanillaStructureBlockExporter",
