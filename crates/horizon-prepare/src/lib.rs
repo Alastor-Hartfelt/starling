@@ -23,9 +23,9 @@ mod sounds;
 mod survival;
 mod worker;
 
-pub use check::{check, missing_extras, STAMP};
+pub use check::{STAMP, check, missing_extras};
 pub use files::clone_or_copy;
-pub use sounds::{add_assets, fonts, languages, packs, panorama, sounds, BUILT_IN_PACKS};
+pub use sounds::{BUILT_IN_PACKS, add_assets, fonts, languages, packs, panorama, sounds};
 
 use pyjson::Value;
 use sha2::Digest;
@@ -1180,7 +1180,7 @@ fn steps(
                 )
                 .map_err(|e| format!("{e} in the data generator; see {}", log_path.display()))?;
             let reports = datagen.join("out").join("reports");
-            install_datagen_reports(root, &reports)?;
+            install_datagen_reports(root, &reports, &lock.version)?;
             (run.log)(&format!("Ran the data generator{}", took(started)));
         }
 
@@ -1402,19 +1402,38 @@ fn datagen_reports_missing(root: &Path) -> bool {
         .any(|name| !root.join(name).is_file())
 }
 
-fn install_datagen_reports(root: &Path, reports: &Path) -> Result<(), String> {
+fn install_datagen_reports(root: &Path, reports: &Path, version: &str) -> Result<(), String> {
     for name in ["registries.json", "commands.json"] {
         copy(&reports.join(name), &root.join(name))?;
     }
-    let mut components = Value::Object(Vec::new());
-    for file in json_files(&reports.join("minecraft/components/item"))? {
-        let stem = file.file_stem().unwrap().to_string_lossy().into_owned();
-        let report = read_json(&file)?;
-        let component = report
-            .get("components")
-            .ok_or_else(|| format!("{} has no components", file.display()))?;
-        components.insert(&format!("minecraft:{stem}"), component.clone());
+    let mut items = Vec::new();
+    let mut add = |name: String, report: Value| -> Result<(), String> {
+        let Value::Object(fields) = report else {
+            return Err(format!("invalid item report for {name}"));
+        };
+        let components = fields
+            .into_iter()
+            .find(|(key, _)| key == "components")
+            .map(|(_, value)| value)
+            .filter(|v| v.as_object().is_some())
+            .ok_or_else(|| format!("{name} has no component object"))?;
+        items.push((name, components));
+        Ok(())
+    };
+    if matches!(version, "1.21.11" | "1.21.11_unobfuscated") {
+        let Value::Object(reports) = read_json(&reports.join("items.json"))? else {
+            return Err("items.json has no item report object".into());
+        };
+        for (name, report) in reports {
+            add(name, report)?;
+        }
+    } else {
+        for file in json_files(&reports.join("minecraft/components/item"))? {
+            let stem = file.file_stem().unwrap().to_string_lossy();
+            add(format!("minecraft:{stem}"), read_json(&file)?)?;
+        }
     }
+    let components = Value::Object(items);
     write_text(
         &root.join("items.json"),
         &pyjson::dumps(&components, &pyjson::DEFAULT),
@@ -1801,7 +1820,7 @@ mod tests {
             "{}",
         )
         .unwrap();
-        install_datagen_reports(&root, &reports).unwrap();
+        install_datagen_reports(&root, &reports, "26.3").unwrap();
         assert!(!datagen_reports_missing(&root));
         for name in ["registries.json", "commands.json"] {
             assert_eq!(
@@ -1809,16 +1828,33 @@ mod tests {
                 read(&reports.join(name)).unwrap()
             );
         }
-        assert!(read_json(&root.join("items.json"))
-            .unwrap()
-            .get("minecraft:stone")
-            .is_some());
+        assert!(
+            read_json(&root.join("items.json"))
+                .unwrap()
+                .get("minecraft:stone")
+                .is_some()
+        );
         assert!(root.join("biome-parameters/overworld.json").is_file());
         for name in ["registries.json", "commands.json", "items.json"] {
             fs::remove_file(root.join(name)).unwrap();
             assert!(datagen_reports_missing(&root), "{name}");
-            install_datagen_reports(&root, &reports).unwrap();
+            install_datagen_reports(&root, &reports, "26.3").unwrap();
         }
+        write_text(
+            &reports.join("items.json"),
+            r#"{"minecraft:water_bucket":{"components":{"minecraft:max_stack_size":1}}}"#,
+        )
+        .unwrap();
+        for version in ["1.21.11", "1.21.11_unobfuscated"] {
+            install_datagen_reports(&root, &reports, version).unwrap();
+            assert_eq!(
+                read_json(&root.join("items.json")).unwrap(),
+                pyjson::loads(r#"{"minecraft:water_bucket":{"minecraft:max_stack_size":1}}"#)
+                    .unwrap()
+            );
+        }
+        write_text(&reports.join("items.json"), r#"{"minecraft:stone":{}}"#).unwrap();
+        assert!(install_datagen_reports(&root, &reports, "1.21.11").is_err());
         fs::remove_dir_all(dir).unwrap();
     }
 
