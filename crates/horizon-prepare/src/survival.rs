@@ -93,6 +93,7 @@ fn lookup(table: &[(&str, &'static str)], key: &str) -> Option<&'static str> {
 /// `{block: rule}` from the exporter's `{block: class}`, `{block: placement class}` and
 /// `{block: {field: support tag}}`, in the order Python's dict built it.
 pub fn bind_definitions(
+    version: &str,
     classes: &Value,
     placement: &Value,
     support_tags: &Value,
@@ -119,7 +120,9 @@ pub fn bind_definitions(
             continue;
         }
         let method = placed.ok_or_else(|| format!("No placement class for {name}"))?;
-        if let Some(rule) = lookup(VEGETATION_RULES, method) {
+        if version == "1.21.11" && matches!(method, "StemBlock" | "AttachedStemBlock") {
+            definitions.insert(name, Value::str("FarmlandBelow"));
+        } else if let Some(rule) = lookup(VEGETATION_RULES, method) {
             definitions.insert(name, Value::str(rule));
         } else if [
             "AttachedStemBlock",
@@ -143,4 +146,38 @@ pub fn bind_definitions(
         }
     }
     Ok(definitions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pyjson::loads;
+
+    #[test]
+    fn stem_placement_uses_the_selected_versions_support_rule() {
+        let classes = loads(r#"{"stem":"VegetationBlock","attached":"VegetationBlock"}"#).unwrap();
+        let placement = loads(r#"{"stem":"StemBlock","attached":"AttachedStemBlock"}"#).unwrap();
+        let empty = loads("{}").unwrap();
+        let fixed = bind_definitions("1.21.11", &classes, &placement, &empty).unwrap();
+        for plant in ["stem", "attached"] {
+            assert_eq!(
+                fixed.get(plant).and_then(Value::as_str),
+                Some("FarmlandBelow")
+            );
+        }
+        assert!(bind_definitions("26.3", &classes, &placement, &empty).is_err());
+        let tags = loads(
+            r#"{"stem":{"stemSupportBlocks":"test:a"},"attached":{"supportBlocks":"test:b"}}"#,
+        )
+        .unwrap();
+        let tagged = bind_definitions("26.3", &classes, &placement, &tags).unwrap();
+        assert_eq!(
+            tagged.get("stem").and_then(Value::as_str),
+            Some("TagBelow:test:a")
+        );
+        assert_eq!(
+            tagged.get("attached").and_then(Value::as_str),
+            Some("TagBelow:test:b")
+        );
+    }
 }

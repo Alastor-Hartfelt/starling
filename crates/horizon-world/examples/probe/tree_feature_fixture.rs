@@ -444,6 +444,7 @@ fn survival_rule(rule: &str) -> SurvivalRule {
         "Farmland" => Farmland,
         "Cocoa" => Cocoa,
         "Crop" => Crop,
+        "FarmlandBelow" => FarmlandBelow,
         "GrowingPlant" => GrowingPlant,
         "MangrovePropagule" => MangrovePropagule,
         "Speleothem" => Speleothem,

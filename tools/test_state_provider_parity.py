@@ -344,7 +344,7 @@ def main():
         run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency_path]),'dev.horizonlab.parity.VanillaBlockSupportOracle','export',build],'support-export')
         run(['java','-Xmx512M','-cp',os.pathsep.join([str(classes),str(jars['server']),dependency_path]),'dev.horizonlab.parity.VanillaBlockSurvivalOracle','definitions',build],'survival-export')
         survival_classes=json.loads((build/'survival-classes.json').read_text())
-        survival_rules=survival.bind_definitions(survival_classes,json.loads((build/'survival-placement-classes.json').read_text()),json.loads((build/'survival-support-tags.json').read_text()))
+        survival_rules=survival.bind_definitions(survival_classes,json.loads((build/'survival-placement-classes.json').read_text()),json.loads((build/'survival-support-tags.json').read_text()),version=lock['minecraft']['version'])
         (build/'survival-rules.json').write_text(json.dumps(survival_rules,separators=(',',':')))
         support_states=json.loads((build/'support-cached-states.json').read_text())
         if len(support_states)!=35524:raise ValueError('incomplete support state cache')

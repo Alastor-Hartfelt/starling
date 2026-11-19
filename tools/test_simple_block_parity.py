@@ -111,7 +111,7 @@ def run(corpus, build_name, source_file, scope):
         if path.read_bytes()!=(build/'client-definitions'/path.name).read_bytes():raise ValueError('reference definitions differ: '+path.name)
         (build/path.name).write_bytes(path.read_bytes())
     facts=json.loads((build/'facts.json').read_text());placement=json.loads((build/'placement-definitions.json').read_text())
-    rules=survival.bind_definitions(*[json.loads((build/name).read_text()) for name in ['survival-classes.json','survival-placement-classes.json','survival-support-tags.json']]);(build/'survival-rules.json').write_text(json.dumps(rules,separators=(',',':')))
+    rules=survival.bind_definitions(*[json.loads((build/name).read_text()) for name in ['survival-classes.json','survival-placement-classes.json','survival-support-tags.json']],version=lock['minecraft']['version']);(build/'survival-rules.json').write_text(json.dumps(rules,separators=(',',':')))
     inputs=build/'inputs.txt';fixture_count=0
     with inputs.open('w',encoding='utf-8') as output:
         for fixture in corpus(facts,placement):output.write(json.dumps(fixture,separators=(',',':'))+'\n');fixture_count+=1

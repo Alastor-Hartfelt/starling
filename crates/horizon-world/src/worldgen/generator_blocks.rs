@@ -46,6 +46,7 @@ fn rule(name: &str) -> Option<SurvivalRule> {
         "Farmland" => Farmland,
         "Cocoa" => Cocoa,
         "Crop" => Crop,
+        "FarmlandBelow" => FarmlandBelow,
         "GrowingPlant" => GrowingPlant,
         "MangrovePropagule" => MangrovePropagule,
         "Speleothem" => Speleothem,

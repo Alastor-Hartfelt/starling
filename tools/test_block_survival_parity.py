@@ -62,14 +62,15 @@ VEGETATION_RULES={
     'CactusFlowerBlock':'CactusFlower','SeagrassBlock':'Seagrass',
 }
 
-def bind_definitions(classes,placement,support_tags):
+def bind_definitions(classes,placement,support_tags,version):
     definitions={name:CLASS_RULES[owner] for name,owner in classes.items() if owner in CLASS_RULES}
     for name,owner in classes.items():
         if owner=='CropBlock' and placement.get(name)=='CropBlock':definitions[name]='Crop'
         if owner=='DoublePlantBlock' and placement.get(name)=='VegetationBlock':definitions[name]='DoublePlant'
         if owner!='VegetationBlock':continue
         method=placement[name]
-        if method in VEGETATION_RULES:definitions[name]=VEGETATION_RULES[method]
+        if version=='1.21.11' and method in ['StemBlock','AttachedStemBlock']:definitions[name]='FarmlandBelow'
+        elif method in VEGETATION_RULES:definitions[name]=VEGETATION_RULES[method]
         elif method in ['AttachedStemBlock','StemBlock','NetherFungusBlock','NetherRootsBlock']:
             field='stemSupportBlocks' if method=='StemBlock' else 'supportBlocks'
             definitions[name]='TagBelow:'+support_tags[name][field]
@@ -226,7 +227,7 @@ def main():
         run(['javac','--release',lock['minecraft']['java_major'],'-proc:none','-sourcepath',str(lab.ROOT/'mods/horizon/src/test/java'),'-cp',str(jars['server'])+os.pathsep+dependency_path,'-d',classes,oracle,*helpers],'compile-java')
         java('server','export',build)
         facts=json.loads((build/'facts.json').read_text());definition_classes=json.loads((build/'survival-classes.json').read_text())
-        definitions=bind_definitions(definition_classes,json.loads((build/'survival-placement-classes.json').read_text()),json.loads((build/'survival-support-tags.json').read_text()))
+        definitions=bind_definitions(definition_classes,json.loads((build/'survival-placement-classes.json').read_text()),json.loads((build/'survival-support-tags.json').read_text()),version=lock['minecraft']['version'])
         if len(facts['states'])!=35723:raise ValueError('incomplete pinned registry')
         if len(definitions)!=len(facts['defaults']):raise ValueError('incomplete pinned survival definitions')
         (build/'survival-rules.json').write_text(json.dumps(definitions,separators=(',',':')))

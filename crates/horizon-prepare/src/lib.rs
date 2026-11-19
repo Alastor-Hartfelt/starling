@@ -1674,6 +1674,10 @@ fn export_block_behavior(run: &Run, worker: usize, export: &Path) -> Result<(), 
         &export.join("export.log"),
     )?;
     let rules = survival::bind_definitions(
+        run.origin
+            .get("minecraft")
+            .and_then(Value::as_str)
+            .ok_or("missing Minecraft version")?,
         &read_json(&export.join("survival-classes.json"))?,
         &read_json(&export.join("survival-placement-classes.json"))?,
         &read_json(&export.join("survival-support-tags.json"))?,

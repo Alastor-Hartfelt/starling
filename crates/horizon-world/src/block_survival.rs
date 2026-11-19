@@ -45,6 +45,7 @@ pub enum SurvivalRule {
     Farmland,
     Cocoa,
     Crop,
+    FarmlandBelow,
     DoublePlant,
     Door,
     TagBelow(String),
@@ -113,6 +114,7 @@ enum Rule {
     Farmland,
     Cocoa(Direction),
     Crop,
+    FarmlandBelow,
     DoublePlant(bool),
     Door(bool),
     TagBelow(usize),
@@ -372,6 +374,7 @@ impl<'r> BlockSurvivalRegistry<'r> {
                 SurvivalRule::BigDripleafStem => Rule::BigDripleafStem,
                 SurvivalRule::Farmland => Rule::Farmland,
                 SurvivalRule::Cocoa => Rule::Cocoa(facing()?),
+                SurvivalRule::FarmlandBelow => Rule::FarmlandBelow,
                 SurvivalRule::Crop => Rule::Crop,
                 SurvivalRule::DoublePlant => Rule::DoublePlant(upper_half()?),
                 SurvivalRule::Door => Rule::Door(upper_half()?),
@@ -1096,6 +1099,10 @@ impl<'r> BlockSurvivalRegistry<'r> {
             Rule::Cocoa(direction) => Ok(self
                 .cocoa
                 .contains(&self.read(world, relative(position, direction))?)),
+            Rule::FarmlandBelow => {
+                let below = self.read(world, relative(position, Direction::Down))?;
+                Ok(self.is_named(below, "minecraft:farmland"))
+            }
             Rule::Crop => Ok(world
                 .raw_brightness(position, 0)
                 .map_err(SurvivalError::World)?
