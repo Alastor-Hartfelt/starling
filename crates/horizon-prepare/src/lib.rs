@@ -1227,7 +1227,7 @@ fn steps(
             "Copied the client's assets and data{}",
             took(started)
         ));
-        worldgen_bundles(run)?;
+        worldgen_bundles(run, &lock.version)?;
         Ok(vec![
             (
                 "data_version",
@@ -1402,6 +1402,11 @@ fn datagen_reports_missing(root: &Path) -> bool {
         .any(|name| !root.join(name).is_file())
 }
 
+/// The named launcher profile uses the release's gameplay and data layouts.
+fn is_12111(version: &str) -> bool {
+    matches!(version, "1.21.11" | "1.21.11_unobfuscated")
+}
+
 fn install_datagen_reports(root: &Path, reports: &Path, version: &str) -> Result<(), String> {
     for name in ["registries.json", "commands.json"] {
         copy(&reports.join(name), &root.join(name))?;
@@ -1420,7 +1425,7 @@ fn install_datagen_reports(root: &Path, reports: &Path, version: &str) -> Result
         items.push((name, components));
         Ok(())
     };
-    if matches!(version, "1.21.11" | "1.21.11_unobfuscated") {
+    if is_12111(version) {
         let Value::Object(reports) = read_json(&reports.join("items.json"))? else {
             return Err("items.json has no item report object".into());
         };
@@ -1494,7 +1499,7 @@ const BLOCK_BEHAVIOR_FILES: [&str; 6] = [
 
 /// The chunk generator's resource bundle in `<resources>/worldgen` (see GeneratorData::load), from
 /// the jars: structure templates and the worldgen registries.
-fn worldgen_bundles(run: &Run) -> Result<(), String> {
+fn worldgen_bundles(run: &Run, version: &str) -> Result<(), String> {
     (run.log)("Writing the world generator's bundle");
     let started = Instant::now();
     let out = run.resources.join("worldgen");
@@ -1512,10 +1517,23 @@ fn worldgen_bundles(run: &Run) -> Result<(), String> {
         let data = zip_bytes(&mut server.clone(), name)?;
         write_if_changed(&out.join("structure/minecraft").join(relative), &data)
     })?;
-    pool::map(&WORLDGEN_BUNDLES, |(name, path)| {
+    let native = is_12111(version);
+    pool::map(&WORLDGEN_BUNDLES, |&(name, path)| {
+        let path = match (native, name) {
+            (true, "carvers") => "worldgen/configured_carver",
+            (true, "features") => "worldgen/configured_feature",
+            _ => path,
+        };
+        // This release embeds rules, conditions and providers in their owners.
+        // It also ships no configured-feature tags. Preserve the empty registries.
+        let allow_empty = native
+            && matches!(
+                name,
+                "rules" | "conditions" | "state_providers" | "feature_tags"
+            );
         let prefix = format!("data/minecraft/{path}/");
         let resources = json_resources(&mut server.clone(), &prefix)?;
-        if resources.as_object().is_none_or(<[_]>::is_empty)
+        if (!allow_empty && resources.as_object().is_none_or(<[_]>::is_empty))
             || resources != json_resources(&mut client.clone(), &prefix)?
         {
             return Err(format!("Reference worldgen resources disagree: {path}"));

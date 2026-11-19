@@ -120,7 +120,7 @@ pub fn bind_definitions(
             continue;
         }
         let method = placed.ok_or_else(|| format!("No placement class for {name}"))?;
-        if version == "1.21.11" && matches!(method, "StemBlock" | "AttachedStemBlock") {
+        if crate::is_12111(version) && matches!(method, "StemBlock" | "AttachedStemBlock") {
             definitions.insert(name, Value::str("FarmlandBelow"));
         } else if let Some(rule) = lookup(VEGETATION_RULES, method) {
             definitions.insert(name, Value::str(rule));
