@@ -534,6 +534,8 @@ fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Optio
             | component::ENCHANTMENTS
             | component::STORED_ENCHANTMENTS
             | component::REPAIR_COST
+            | component::CUSTOM_MODEL_DATA
+            | component::DYED_COLOR
             | component::ENCHANTMENT_GLINT_OVERRIDE => {}
             // 1.21.11 does not include per-component lengths here. Refuse the
             // packet if the component's wire format has not been checked.
@@ -747,6 +749,40 @@ mod tests {
         }
         assert!(decode_inventory(id, &payload[..9]).is_err());
         assert!(decode_inventory(id, &[42, 0, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn equipment_preserves_dye_and_resource_pack_model_data() {
+        let mut w = Writer::new();
+        w.varint(42); // Entity ID.
+        w.u8(0); // Main hand.
+        w.varint(1); // Item count.
+        w.varint(928); // Golden pickaxe with custom components.
+        w.varint(2); // Two added components.
+        w.varint(0); // No removed components.
+        w.varint(42); // 1.21.11 dyed_color component ID.
+        w.i32(0x33_66_cc);
+        w.varint(17); // 1.21.11 custom_model_data component ID.
+        w.varint(0); // Floats.
+        w.varint(0); // Flags.
+        w.varint(0); // Strings.
+        w.varint(1); // Colors.
+        w.i32(0xff_99_cc);
+
+        let play::Clientbound::SetEquipment(packet) =
+            decode_inventory(ids::play::clientbound::SET_EQUIPMENT, &w.data).unwrap()
+        else {
+            panic!("expected entity equipment update");
+        };
+        let stack = packet.slots[0].1.as_ref().unwrap();
+        assert_eq!(
+            stack.component(component::DYED_COLOR),
+            Some(&Component::Int(0x33_66_cc))
+        );
+        assert!(matches!(
+            stack.component(component::CUSTOM_MODEL_DATA),
+            Some(Component::CustomModelData { colors, .. }) if colors.as_slice() == [0xff_99_cc]
+        ));
     }
 
     #[test]
