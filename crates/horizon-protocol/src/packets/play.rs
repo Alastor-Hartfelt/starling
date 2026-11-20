@@ -1512,8 +1512,11 @@ pub struct Commands {
     pub nodes: Vec<CommandNode>,
     pub root: i32,
 }
-impl Codec<Commands> for Commands {
-    fn read(r: &mut Reader) -> Result<Self> {
+impl Commands {
+    pub(crate) fn read_with_parser_ids(
+        r: &mut Reader,
+        parser_id: impl Fn(i32) -> Result<i32>,
+    ) -> Result<Self> {
         let n = r.count(r.remaining())?;
         let mut nodes = Vec::with_capacity(n.min(4096));
         for _ in 0..n {
@@ -1531,7 +1534,7 @@ impl Codec<Commands> for Commands {
                 name = r.string(32767)?;
             }
             if kind == 2 {
-                let id = r.varint()?;
+                let id = parser_id(r.varint()?)?;
                 let start = r.position();
                 read_argument_properties(r, id)?;
                 parser = Some((id, r.since(start).to_vec()));
@@ -1555,6 +1558,12 @@ impl Codec<Commands> for Commands {
             root: r.varint()?,
         })
     }
+}
+impl Codec<Commands> for Commands {
+    fn read(r: &mut Reader) -> Result<Self> {
+        Self::read_with_parser_ids(r, Ok)
+    }
+
     fn write(v: &Self, w: &mut Writer) {
         w.varint(v.nodes.len() as i32);
         for n in &v.nodes {

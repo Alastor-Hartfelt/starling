@@ -169,6 +169,8 @@ impl Wire {
                 | play::Serverbound::Chat(_)
                 | play::Serverbound::ChatAck(_)
                 | play::Serverbound::ChatCommand(_)
+                | play::Serverbound::ChatCommandSigned(_)
+                | play::Serverbound::Unknown(ids::play::serverbound::COMMAND_SUGGESTION, _)
                 | play::Serverbound::ContainerClose(_)
                 | play::Serverbound::ChunkBatchReceived(_)
                 | play::Serverbound::PlayerLoaded(_)
@@ -289,6 +291,7 @@ impl Wire {
             | canonical::SET_PLAYER_INVENTORY
             | canonical::SET_CURSOR_ITEM
             | canonical::SET_EQUIPMENT => radio_12111::decode_inventory_for(id, payload, blocks)?,
+            canonical::COMMANDS => play::Clientbound::Commands(radio_12111::decode_commands(payload)?),
             canonical::SET_PLAYER_TEAM => {
                 play::Clientbound::SetPlayerTeam(radio_12111::decode_team(payload)?)
             }
@@ -314,6 +317,7 @@ impl Wire {
             | canonical::SET_CHUNK_CACHE_RADIUS
             | canonical::SET_SIMULATION_DISTANCE
             | canonical::PLAYER_ABILITIES
+            | canonical::COMMAND_SUGGESTIONS
             | canonical::SYSTEM_CHAT
             | canonical::PLAYER_CHAT
             | canonical::DISGUISED_CHAT

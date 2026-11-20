@@ -570,6 +570,23 @@ fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Optio
     Ok(Some(stack))
 }
 
+/// Read the server's Brigadier tree using 1.21.11 argument IDs.
+pub fn decode_commands(payload: &[u8]) -> Result<play::Commands> {
+    let mut r = Reader::new(payload);
+    let commands = play::Commands::read_with_parser_ids(&mut r, |id| {
+        match id {
+            0..=54 => Ok(id),
+            55 => Ok(58), // dialog
+            56 => Ok(61), // uuid
+            _ => Err(crate::Error::new(format!("unknown 1.21.11 command parser {id}"))),
+        }
+    })?;
+    if r.remaining() != 0 {
+        return Err(crate::Error::new("trailing bytes in 1.21.11 command tree"));
+    }
+    Ok(commands)
+}
+
 /// Translate the 1.21.11 team parameter layout into the shared HUD model.
 pub fn decode_team(payload: &[u8]) -> Result<play::SetPlayerTeam> {
     let mut r = Reader::new(payload);
@@ -872,6 +889,28 @@ mod tests {
             stack.component(component::CUSTOM_MODEL_DATA),
             Some(Component::CustomModelData { colors, .. }) if colors.as_slice() == [0xff_99_cc]
         ));
+    }
+
+    #[test]
+    fn command_tree_remaps_dialog_and_uuid_parsers() {
+        let mut w = Writer::new();
+        w.varint(3);
+        w.u8(0); // Root with two children.
+        w.varint(2);
+        w.varint(1);
+        w.varint(2);
+        for (name, parser) in [("dialog", 55), ("uuid", 56)] {
+            w.u8(6); // Executable argument node.
+            w.varint(0);
+            w.string(name);
+            w.varint(parser);
+        }
+        w.varint(0);
+        let tree = decode_commands(&w.data).unwrap();
+        for (node, expected) in tree.nodes[1..].iter().zip(["minecraft:dialog", "minecraft:uuid"]) {
+            let (parser, _) = node.parser.as_ref().unwrap();
+            assert_eq!(play::ARGUMENT_TYPES[*parser as usize], expected);
+        }
     }
 
     #[test]
