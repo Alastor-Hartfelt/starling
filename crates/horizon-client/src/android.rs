@@ -663,19 +663,22 @@ mod input {
     use winit::event::MouseButton;
     use winit::platform::android::activity::{
         InputStatus,
-        input::{Axis, InputEvent, KeyAction, KeyEvent, MotionAction, MotionEvent},
+        input::{Axis, InputEvent, KeyAction, KeyEvent, Keycode, MotionAction, MotionEvent},
     };
 
     /// `InputDevice.SOURCE_MOUSE` and `SOURCE_MOUSE_RELATIVE` (the captured pointer's) without
     /// their class bits.
     const SOURCE_MOUSE: u32 = 0x2000;
     const SOURCE_MOUSE_RELATIVE: u32 = 0x0002_0000;
-    /// `MotionEvent.BUTTON_PRIMARY`, `_SECONDARY` and `_TERTIARY`. The back and forward buttons
-    /// are left to Android, which makes the Back and Forward keys of them.
-    const BUTTONS: [(u32, MouseButton); 3] = [
+    /// Android `MotionEvent` mouse button masks.
+    const BUTTON_BACK: u32 = 8;
+    const BUTTON_FORWARD: u32 = 16;
+    const BUTTONS: [(u32, MouseButton); 5] = [
         (1, MouseButton::Left),
         (2, MouseButton::Right),
         (4, MouseButton::Middle),
+        (BUTTON_BACK, MouseButton::Back),
+        (BUTTON_FORWARD, MouseButton::Forward),
     ];
     /// The most mouse events kept for a game that is not reading them (a save on quit).
     const MOUSE_QUEUE: usize = 512;
@@ -698,7 +701,18 @@ mod input {
         taken: bool,
         events: Vec<MouseEvent>,
         buttons: u32,
+        side_keys: u32,
         at: Option<(f32, f32)>,
+    }
+
+    impl Mouse {
+        fn button_changes(&self, previous: u32) -> impl Iterator<Item = MouseEvent> + use<> {
+            let held = self.buttons | self.side_keys;
+            BUTTONS.into_iter().filter_map(move |(bit, button)| {
+                ((held ^ previous) & bit != 0)
+                    .then_some(MouseEvent::Button(button, held & bit != 0))
+            })
+        }
     }
 
     static PADS: Mutex<AndroidPads> = Mutex::new(AndroidPads::new());
@@ -706,6 +720,7 @@ mod input {
         taken: false,
         events: Vec::new(),
         buttons: 0,
+        side_keys: 0,
         at: None,
     });
     /// A physical keyboard's key went down since the game last asked.
@@ -728,6 +743,29 @@ mod input {
             KeyAction::Up => false,
             _ => return None,
         };
+        // Android may also report a side button as a mouse-sourced key. Merge that
+        // state with the motion buttons so one press cannot activate a bind twice.
+        if source & (SOURCE_MOUSE | SOURCE_MOUSE_RELATIVE) != 0 {
+            let bit = match key.key_code() {
+                Keycode::Back => BUTTON_BACK,
+                Keycode::Forward => BUTTON_FORWARD,
+                _ => 0,
+            };
+            if bit != 0 {
+                let mut mouse = MOUSE.lock().unwrap_or_else(|e| e.into_inner());
+                if mouse.taken {
+                    let previous = mouse.buttons | mouse.side_keys;
+                    if down {
+                        mouse.side_keys |= bit;
+                    } else {
+                        mouse.side_keys &= !bit;
+                    }
+                    let changes = mouse.button_changes(previous);
+                    mouse.events.extend(changes);
+                    return Some(InputStatus::Handled);
+                }
+            }
+        }
         if let Some(button) = pad::pad_key(source, code) {
             let mut pads = PADS.lock().unwrap_or_else(|e| e.into_inner());
             pads.key(key.device_id(), button, down);
@@ -807,16 +845,13 @@ mod input {
                 events.push(MouseEvent::Wheel(-right, up));
             }
         }
-        let buttons = motion.button_state().0;
-        for (bit, button) in BUTTONS {
-            if (buttons ^ mouse.buttons) & bit != 0 {
-                events.push(MouseEvent::Button(button, buttons & bit != 0));
-            }
-        }
-        mouse.buttons = buttons;
         if mouse.events.len() + events.len() <= MOUSE_QUEUE {
             mouse.events.append(&mut events);
         }
+        let previous = mouse.buttons | mouse.side_keys;
+        mouse.buttons = motion.button_state().0;
+        let changes = mouse.button_changes(previous);
+        mouse.events.extend(changes);
         Some(InputStatus::Handled)
     }
 
