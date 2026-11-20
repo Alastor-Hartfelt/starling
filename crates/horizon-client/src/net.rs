@@ -285,7 +285,8 @@ impl Wire {
             canonical::CONTAINER_SET_CONTENT
             | canonical::CONTAINER_SET_SLOT
             | canonical::SET_PLAYER_INVENTORY
-            | canonical::SET_CURSOR_ITEM => radio_12111::decode_inventory_for(id, payload, blocks)?,
+            | canonical::SET_CURSOR_ITEM
+            | canonical::SET_EQUIPMENT => radio_12111::decode_inventory_for(id, payload, blocks)?,
             canonical::PLAYER_POSITION
             | canonical::OPEN_SCREEN
             | canonical::CONTAINER_CLOSE

@@ -596,6 +596,18 @@ pub fn decode_inventory_for(
         canonical::SET_CURSOR_ITEM => play::Clientbound::SetCursorItem(play::SetCursorItem {
             item: read_item_slot(&mut reader, target)?,
         }),
+        canonical::SET_EQUIPMENT => {
+            let id = reader.varint()?;
+            let mut slots = Vec::new();
+            loop {
+                let slot = reader.u8()?;
+                slots.push((slot & 0x7f, read_item_slot(&mut reader, target)?));
+                if slot & 0x80 == 0 {
+                    break;
+                }
+            }
+            play::Clientbound::SetEquipment(play::SetEquipment { id, slots })
+        }
         _ => return Err(crate::Error::new("unknown 1.21.11 inventory packet")),
     };
     if reader.remaining() != 0 {
@@ -710,6 +722,31 @@ mod tests {
         assert!(decode_inventory(kind, &payload[..7]).is_err());
         // Component 104 is out of bounds and its unframed value cannot be skipped.
         assert!(decode_inventory(kind, &[3, 1, 0xa0, 7, 1, 0, 104, 11]).is_err());
+    }
+
+    #[test]
+    fn equipment_translates_held_items_and_preserves_empty_slots() {
+        // Entity 42, main hand with a damaged golden pickaxe, empty offhand.
+        let payload = [42, 0x80, 1, 0xa0, 7, 1, 0, 3, 11, 1, 0];
+        let id = ids::play::clientbound::SET_EQUIPMENT;
+        for (target, expected_item) in [
+            (BlockStateTarget::Engine26_3, 1042),
+            (BlockStateTarget::Native12111, 928),
+        ] {
+            let play::Clientbound::SetEquipment(packet) =
+                decode_inventory_for(id, &payload, target).unwrap()
+            else {
+                panic!("expected entity equipment update");
+            };
+            assert_eq!(packet.id, 42);
+            assert_eq!(packet.slots.len(), 2);
+            let (slot, stack) = &packet.slots[0];
+            let stack = stack.as_ref().unwrap();
+            assert_eq!((*slot, stack.item, stack.damage()), (0, expected_item, 11));
+            assert_eq!(packet.slots[1], (1, None));
+        }
+        assert!(decode_inventory(id, &payload[..9]).is_err());
+        assert!(decode_inventory(id, &[42, 0, 0, 0]).is_err());
     }
 
     #[test]
