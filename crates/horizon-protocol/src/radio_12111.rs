@@ -8,6 +8,7 @@ use crate::{
     Result,
     buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Reader, UByte, VarInt, Vec3d, Writer},
     chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy},
+    entity_data::{self, Value, serializer},
     ids,
     item::{Component, Hashed, Stack, component},
     packet,
@@ -536,6 +537,10 @@ fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Optio
             | component::REPAIR_COST
             | component::CUSTOM_MODEL_DATA
             | component::DYED_COLOR
+            | component::POTION_CONTENTS
+            | component::MAP_ID
+            | component::OMINOUS_BOTTLE_AMPLIFIER
+            | component::TOOLTIP_DISPLAY
             | component::ENCHANTMENT_GLINT_OVERRIDE => {}
             // 1.21.11 does not include per-component lengths here. Refuse the
             // packet if the component's wire format has not been checked.
@@ -545,7 +550,17 @@ fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Optio
                 )));
             }
         }
-        stack.added.push((kind, Component::read(kind, reader)?));
+        let mut value = Component::read(kind, reader)?;
+        if let Component::TooltipDisplay { hidden, .. } = &mut value {
+            hidden.retain_mut(|id| match item_registry_id(*id, &item_types::COMPONENTS) {
+                Ok(mapped) => {
+                    *id = mapped;
+                    true
+                }
+                Err(_) => false,
+            });
+        }
+        stack.added.push((kind, value));
     }
     for _ in 0..removed {
         stack
@@ -553,6 +568,76 @@ fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Optio
             .push(item_registry_id(reader.varint()?, &item_types::COMPONENTS)?);
     }
     Ok(Some(stack))
+}
+
+/// Translate the 1.21.11 team parameter layout into the shared HUD model.
+pub fn decode_team(payload: &[u8]) -> Result<play::SetPlayerTeam> {
+    let mut r = Reader::new(payload);
+    let name = r.string(32767)?;
+    let method = r.i8()?;
+    let parameters = if matches!(method, 0 | 2) {
+        let display_name = r.nbt()?;
+        let options = r.i8()?;
+        let name_tag_visibility = r.varint()?;
+        let collision_rule = r.varint()?;
+        let formatting = r.varint()?;
+        Some(play::TeamParameters {
+            display_name,
+            prefix: r.nbt()?,
+            suffix: r.nbt()?,
+            name_tag_visibility,
+            collision_rule,
+            color: (0..16).contains(&formatting).then_some(formatting),
+            options,
+        })
+    } else {
+        None
+    };
+    let players = if matches!(method, 0 | 3 | 4) {
+        <List<crate::buf::Str>>::read(&mut r)?
+    } else {
+        Vec::new()
+    };
+    if !matches!(method, 0..=4) || r.remaining() != 0 {
+        return Err(crate::Error::new("invalid 1.21.11 team update"));
+    }
+    Ok(play::SetPlayerTeam {
+        name,
+        method,
+        parameters,
+        players,
+    })
+}
+
+/// Read shared metadata fields, including the invisibility and name flags
+/// used by armor stand holograms. Unframed serializers with version-specific
+/// layouts stop the scan, preserving the fields already read.
+pub fn decode_entity_data(payload: &[u8], target: BlockStateTarget) -> Result<play::SetEntityData> {
+    let mut r = Reader::new(payload);
+    let id = r.varint()?;
+    let mut values = Vec::new();
+    loop {
+        let index = r.u8()?;
+        if index == 0xff {
+            break;
+        }
+        let kind = r.varint()?;
+        let value = match kind {
+            serializer::ITEM_STACK => match read_item_slot(&mut r, target) {
+                Ok(item) => Value::Item(item),
+                Err(_) => break,
+            },
+            serializer::BYTE..=serializer::DIRECTION | serializer::OPTIONAL_UNSIGNED_INT => {
+                let Some(value) = entity_data::read_value(kind, &mut r)? else {
+                    break;
+                };
+                value
+            }
+            _ => break,
+        };
+        values.push((index, kind, value));
+    }
+    Ok(play::SetEntityData { id, values })
 }
 
 pub fn decode_inventory(id: i32, payload: &[u8]) -> Result<play::Clientbound> {
@@ -572,7 +657,11 @@ pub fn decode_inventory_for(
             let state = reader.varint()?;
             let count = reader.count(reader.remaining())?;
             let items = (0..count)
-                .map(|_| read_item_slot(&mut reader, target))
+                .map(|slot| {
+                    read_item_slot(&mut reader, target).map_err(|err| {
+                        crate::Error::new(format!("container {container}, slot {slot}: {err}"))
+                    })
+                })
                 .collect::<Result<_>>()?;
             play::Clientbound::ContainerSetContent(play::ContainerSetContent {
                 container,
@@ -783,6 +872,50 @@ mod tests {
             stack.component(component::CUSTOM_MODEL_DATA),
             Some(Component::CustomModelData { colors, .. }) if colors.as_slice() == [0xff_99_cc]
         ));
+    }
+
+    #[test]
+    fn team_updates_read_legacy_formatting_before_prefix_and_suffix() {
+        use horizon_world::nbt::Tag;
+
+        let mut w = Writer::new();
+        w.string("sidebar");
+        w.i8(0);
+        w.nbt(&Tag::String("Sidebar".into()));
+        w.i8(3);
+        w.varint(1);
+        w.varint(2);
+        w.varint(10);
+        w.nbt(&Tag::String("Prefix ".into()));
+        w.nbt(&Tag::String(" Suffix".into()));
+        w.varint(1);
+        w.string("entry");
+
+        let team = decode_team(&w.data).unwrap();
+        let parameters = team.parameters.unwrap();
+        assert_eq!(team.players, vec!["entry".to_owned()]);
+        assert_eq!(parameters.prefix, Tag::String("Prefix ".into()));
+        assert_eq!(parameters.suffix, Tag::String(" Suffix".into()));
+        assert_eq!(parameters.color, Some(10));
+        assert_eq!(parameters.options, 3);
+    }
+
+    #[test]
+    fn metadata_reads_invisibility_and_marker_flags_for_holograms() {
+        let packet = decode_entity_data(
+            &[42, 0, 0, 0x20, 3, 8, 1, 15, 0, 0x10, 0xff],
+            BlockStateTarget::Engine26_3,
+        )
+        .unwrap();
+        assert_eq!(packet.id, 42);
+        assert_eq!(
+            packet.values,
+            vec![
+                (0, serializer::BYTE, Value::Byte(0x20)),
+                (3, serializer::BOOLEAN, Value::Bool(true)),
+                (15, serializer::BYTE, Value::Byte(0x10)),
+            ],
+        );
     }
 
     #[test]

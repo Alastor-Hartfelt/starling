@@ -330,7 +330,7 @@ pub mod serializer {
     pub const HUMANOID_ARM: i32 = 42;
     pub const DYE_COLOR: i32 = 43;
 }
-fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
+pub(crate) fn read_value(kind: i32, r: &mut Reader) -> Result<Option<Value>> {
     use serializer::*;
     Ok(Some(match kind {
         BYTE => Value::Byte(r.i8()?),
