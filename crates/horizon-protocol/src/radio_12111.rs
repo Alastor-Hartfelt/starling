@@ -10,7 +10,7 @@ use crate::{
     chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy},
     entity_data::{self, Value, serializer},
     ids,
-    item::{Component, Hashed, Stack, component},
+    item::{Component, Hashed, Stack, Template, component},
     packet,
     packets::{handshake, login, play},
 };
@@ -506,6 +506,17 @@ fn item_registry_id(id: i32, lookup: &[i16]) -> Result<i32> {
 }
 
 fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Option<Stack>> {
+    read_nested_item_slot(reader, target, 0)
+}
+
+fn read_nested_item_slot(
+    reader: &mut Reader,
+    target: BlockStateTarget,
+    depth: usize,
+) -> Result<Option<Stack>> {
+    if depth > 16 {
+        return Err(crate::Error::new("1.21.11 item nesting limit exceeded"));
+    }
     let count = reader.varint()?;
     if count <= 0 {
         return Ok(None);
@@ -521,7 +532,23 @@ fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Optio
     let removed = reader.count(104)?;
     for _ in 0..added {
         let kind = item_registry_id(reader.varint()?, &item_types::COMPONENTS)?;
-        match kind {
+        let mut value = match kind {
+            component::CONTAINER | component::BUNDLE_CONTENTS | component::CHARGED_PROJECTILES => {
+                let count = reader.count(reader.remaining().min(1024))?;
+                let items = (0..count)
+                    .map(|_| read_nested_item_slot(reader, target, depth + 1))
+                    .collect::<Result<Vec<_>>>()?;
+                if kind == component::CONTAINER {
+                    let mut w = Writer::new();
+                    w.varint(count as i32);
+                    for item in items {
+                        <Opt<Template>>::write(&item, &mut w);
+                    }
+                    Component::Raw(w.data)
+                } else {
+                    Component::Stacks(items.into_iter().flatten().collect())
+                }
+            }
             component::CUSTOM_DATA
             | component::MAX_STACK_SIZE
             | component::MAX_DAMAGE
@@ -541,7 +568,20 @@ fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Optio
             | component::MAP_ID
             | component::OMINOUS_BOTTLE_AMPLIFIER
             | component::TOOLTIP_DISPLAY
-            | component::ENCHANTMENT_GLINT_OVERRIDE => {}
+            | component::TOOLTIP_STYLE
+            | component::ATTRIBUTE_MODIFIERS
+            | component::FOOD
+            | component::USE_COOLDOWN
+            | component::TOOL
+            | component::WEAPON
+            | component::ENCHANTABLE
+            | component::EQUIPPABLE
+            | component::REPAIRABLE
+            | component::GLIDER
+            | component::BLOCK_STATE
+            | component::FIREWORKS
+            | component::FIREWORK_EXPLOSION
+            | component::ENCHANTMENT_GLINT_OVERRIDE => Component::read(kind, reader)?,
             // 1.21.11 does not include per-component lengths here. Refuse the
             // packet if the component's wire format has not been checked.
             _ => {
@@ -549,8 +589,7 @@ fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Optio
                     "unsupported 1.21.11 item component {kind}"
                 )));
             }
-        }
-        let mut value = Component::read(kind, reader)?;
+        };
         if let Component::TooltipDisplay { hidden, .. } = &mut value {
             hidden.retain_mut(|id| match item_registry_id(*id, &item_types::COMPONENTS) {
                 Ok(mapped) => {
@@ -889,6 +928,34 @@ mod tests {
             stack.component(component::CUSTOM_MODEL_DATA),
             Some(Component::CustomModelData { colors, .. }) if colors.as_slice() == [0xff_99_cc]
         ));
+    }
+
+    #[test]
+    fn inventory_snapshot_keeps_slots_after_a_filled_shulker_box() {
+        let mut w = Writer::new();
+        for value in [0, 1, 2, 1, 581, 1, 0, 73, 2, 0, 64, 1, 0, 0, 8, 1, 0, 0, 0] {
+            w.varint(value);
+        }
+        let play::Clientbound::ContainerSetContent(packet) = decode_inventory_for(
+            ids::play::clientbound::CONTAINER_SET_CONTENT,
+            &w.data,
+            BlockStateTarget::Native12111,
+        )
+        .unwrap() else {
+            panic!("expected inventory snapshot");
+        };
+        let box_stack = packet.items[0].as_ref().unwrap();
+        assert_eq!(box_stack.item, 581);
+        let Some(Component::Raw(bytes)) = box_stack.component(component::CONTAINER) else {
+            panic!("expected shulker contents");
+        };
+        let mut r = Reader::new(bytes);
+        assert_eq!(r.varint().unwrap(), 2);
+        assert!(<Opt<Template>>::read(&mut r).unwrap().is_none());
+        let stone = <Opt<Template>>::read(&mut r).unwrap().unwrap();
+        assert_eq!((stone.item, stone.count), (1, 64));
+        assert_eq!(packet.items[1].as_ref().unwrap().count, 8);
+        assert!(packet.carried.is_none());
     }
 
     #[test]
