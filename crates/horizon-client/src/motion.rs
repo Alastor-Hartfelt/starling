@@ -1007,6 +1007,16 @@ enum TickInput {
     PreparedLocal { direction: [f32; 2], jumping: bool },
 }
 impl MotionWorld<'_, '_, '_> {
+    // 1.21.11 applies block friction and air drag directly, before the
+    // introduction of player attributes that scale those coefficients.
+    fn friction_attribute(&mut self, name: &str) -> Result<f64> {
+        if self.resources.blocks.data_version() == 4671 {
+            Ok(1.0)
+        } else {
+            self.player.attribute(name)
+        }
+    }
+
     fn context(&self) -> CollisionContext<'static> {
         CollisionContext::for_entity(
             CollisionEntity {
@@ -2767,7 +2777,7 @@ impl LivingAirWorld for MotionWorld<'_, '_, '_> {
             .friction)
     }
     fn friction_modifier(&mut self) -> Result<f64> {
-        self.player.attribute("minecraft:friction_modifier")
+        self.friction_attribute("minecraft:friction_modifier")
     }
     fn speed(&mut self) -> Result<f32> {
         Ok(self.player.attribute("minecraft:movement_speed")? as f32)
@@ -2852,7 +2862,7 @@ impl LivingAirWorld for MotionWorld<'_, '_, '_> {
         Ok(false)
     }
     fn air_drag_modifier(&mut self) -> Result<f64> {
-        self.player.attribute("minecraft:air_drag_modifier")
+        self.friction_attribute("minecraft:air_drag_modifier")
     }
     fn omnidirectional_air_mover(&mut self) -> Result<bool> {
         Ok(false)
@@ -2917,7 +2927,7 @@ impl LivingMotionWorld for MotionWorld<'_, '_, '_> {
         Ok(false)
     }
     fn air_drag_modifier(&mut self) -> Result<f64> {
-        self.player.attribute("minecraft:air_drag_modifier")
+        self.friction_attribute("minecraft:air_drag_modifier")
     }
 }
 
