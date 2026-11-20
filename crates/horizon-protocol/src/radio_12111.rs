@@ -155,11 +155,14 @@ pub fn remap_entity_spawn_with_blocks(
             .state(spawn.data)
             .ok_or_else(|| crate::Error::new("unknown 1.21.11 falling block state"))?;
     }
-    spawn.kind = usize::try_from(spawn.kind)
-        .ok()
-        .and_then(|id| entity_types::ENTITY_TYPES.get(id).copied())
-        .map(i32::from)
-        .ok_or_else(|| crate::Error::new("unknown 1.21.11 entity type"))?;
+    spawn.kind = match target {
+        BlockStateTarget::Native12111 => native_id(spawn.kind, entity_types::ENTITY_TYPES.len()),
+        BlockStateTarget::Engine26_3 => usize::try_from(spawn.kind)
+            .ok()
+            .and_then(|id| entity_types::ENTITY_TYPES.get(id).copied())
+            .map(i32::from),
+    }
+    .ok_or_else(|| crate::Error::new("unknown 1.21.11 entity type"))?;
     Ok(spawn)
 }
 
@@ -232,14 +235,34 @@ pub fn block_entity_type_to_engine(id: i32) -> Option<i32> {
         .map(i32::from)
 }
 
+fn native_id(id: i32, len: usize) -> Option<i32> {
+    usize::try_from(id).ok().filter(|&i| i < len).map(|_| id)
+}
+
+impl BlockStateTarget {
+    pub fn block_entity(self, id: i32) -> Option<i32> {
+        match self {
+            Self::Native12111 => native_id(id, entity_types::BLOCK_ENTITY_TYPES.len()),
+            Self::Engine26_3 => block_entity_type_to_engine(id),
+        }
+    }
+}
+
 /// Decode a 1.21.11 Level Chunk With Light payload after removing its packet ID.
 pub fn decode_level_chunk(payload: &[u8]) -> Result<play::LevelChunkWithLight> {
+    decode_level_chunk_for(payload, BlockStateTarget::Engine26_3)
+}
+
+pub fn decode_level_chunk_for(
+    payload: &[u8],
+    target: BlockStateTarget,
+) -> Result<play::LevelChunkWithLight> {
     let mut r = Reader::new(payload);
     let x = r.i32()?;
     let z = r.i32()?;
     let mut chunk = ChunkData::read(&mut r)?;
     chunk.block_entities.retain_mut(|entity| {
-        if let Some(kind) = block_entity_type_to_engine(entity.kind) {
+        if let Some(kind) = target.block_entity(entity.kind) {
             entity.kind = kind;
             true
         } else {
@@ -452,6 +475,26 @@ pub fn encode_teleport_ack(id: i32) -> Vec<u8> {
     writer.data
 }
 
+/// Components inside Rust stacks use the protocol crate's canonical ordinals.
+/// Keep the loaded registry's names paired with those ordinals for NBT and click hashes.
+pub fn canonicalize_component_registry(builtin: &mut crate::registry::Builtin) {
+    let Some(components) = builtin.registries.get_mut("minecraft:data_component_type") else {
+        return;
+    };
+    let names = std::mem::take(&mut components.names);
+    components.ids.clear();
+    for (name, &canonical) in names.into_iter().zip(item_types::COMPONENTS.iter()) {
+        let Ok(index) = usize::try_from(canonical) else {
+            continue;
+        };
+        if components.names.len() <= index {
+            components.names.resize(index + 1, String::new());
+        }
+        components.ids.insert(name.clone(), i32::from(canonical));
+        components.names[index] = name;
+    }
+}
+
 fn item_registry_id(id: i32, lookup: &[i16]) -> Result<i32> {
     usize::try_from(id)
         .ok()
@@ -461,12 +504,17 @@ fn item_registry_id(id: i32, lookup: &[i16]) -> Result<i32> {
         .ok_or_else(|| crate::Error::new(format!("unmapped 1.21.11 item registry ID {id}")))
 }
 
-fn read_item_slot(reader: &mut Reader) -> Result<Option<Stack>> {
+fn read_item_slot(reader: &mut Reader, target: BlockStateTarget) -> Result<Option<Stack>> {
     let count = reader.varint()?;
     if count <= 0 {
         return Ok(None);
     }
-    let item = item_registry_id(reader.varint()?, &item_types::ITEMS)?;
+    let id = reader.varint()?;
+    let item = match target {
+        BlockStateTarget::Engine26_3 => item_registry_id(id, &item_types::ITEMS)?,
+        BlockStateTarget::Native12111 => native_id(id, item_types::ITEMS.len())
+            .ok_or_else(|| crate::Error::new("unknown 1.21.11 item"))?,
+    };
     let mut stack = Stack::new(item, count);
     let added = reader.count(104)?;
     let removed = reader.count(104)?;
@@ -506,6 +554,14 @@ fn read_item_slot(reader: &mut Reader) -> Result<Option<Stack>> {
 }
 
 pub fn decode_inventory(id: i32, payload: &[u8]) -> Result<play::Clientbound> {
+    decode_inventory_for(id, payload, BlockStateTarget::Engine26_3)
+}
+
+pub fn decode_inventory_for(
+    id: i32,
+    payload: &[u8],
+    target: BlockStateTarget,
+) -> Result<play::Clientbound> {
     use ids::play::clientbound as canonical;
     let mut reader = Reader::new(payload);
     let packet = match id {
@@ -514,13 +570,13 @@ pub fn decode_inventory(id: i32, payload: &[u8]) -> Result<play::Clientbound> {
             let state = reader.varint()?;
             let count = reader.count(reader.remaining())?;
             let items = (0..count)
-                .map(|_| read_item_slot(&mut reader))
+                .map(|_| read_item_slot(&mut reader, target))
                 .collect::<Result<_>>()?;
             play::Clientbound::ContainerSetContent(play::ContainerSetContent {
                 container,
                 state,
                 items,
-                carried: read_item_slot(&mut reader)?,
+                carried: read_item_slot(&mut reader, target)?,
             })
         }
         canonical::CONTAINER_SET_SLOT => {
@@ -528,17 +584,17 @@ pub fn decode_inventory(id: i32, payload: &[u8]) -> Result<play::Clientbound> {
                 container: reader.varint()?,
                 state: reader.varint()?,
                 slot: reader.i16()?,
-                item: read_item_slot(&mut reader)?,
+                item: read_item_slot(&mut reader, target)?,
             })
         }
         canonical::SET_PLAYER_INVENTORY => {
             play::Clientbound::SetPlayerInventory(play::SetPlayerInventory {
                 slot: reader.varint()?,
-                item: read_item_slot(&mut reader)?,
+                item: read_item_slot(&mut reader, target)?,
             })
         }
         canonical::SET_CURSOR_ITEM => play::Clientbound::SetCursorItem(play::SetCursorItem {
-            item: read_item_slot(&mut reader)?,
+            item: read_item_slot(&mut reader, target)?,
         }),
         _ => return Err(crate::Error::new("unknown 1.21.11 inventory packet")),
     };
@@ -558,11 +614,15 @@ fn legacy_registry_id(id: i32, lookup: &[i16]) -> Option<i32> {
         .map(|index| index as i32)
 }
 
-fn remap_slot_hash(slot: &mut Option<Hashed>) -> bool {
+fn remap_slot_hash(slot: &mut Option<Hashed>, target: BlockStateTarget) -> bool {
     let Some(stack) = slot else {
         return true;
     };
-    let Some(item) = legacy_registry_id(stack.item, &item_types::ITEMS) else {
+    let item = match target {
+        BlockStateTarget::Engine26_3 => legacy_registry_id(stack.item, &item_types::ITEMS),
+        BlockStateTarget::Native12111 => native_id(stack.item, item_types::ITEMS.len()),
+    };
+    let Some(item) = item else {
         return false;
     };
     stack.item = item;
@@ -583,11 +643,18 @@ fn remap_slot_hash(slot: &mut Option<Hashed>) -> bool {
 
 /// The 1.21.11 click layout uses the same prediction hashes and older registry
 /// IDs. Omitted predictions are synchronized from the authoritative menu.
-pub fn remap_container_click(mut click: play::ContainerClick) -> play::ContainerClick {
+pub fn remap_container_click(click: play::ContainerClick) -> play::ContainerClick {
+    remap_container_click_for(click, BlockStateTarget::Engine26_3)
+}
+
+pub fn remap_container_click_for(
+    mut click: play::ContainerClick,
+    target: BlockStateTarget,
+) -> play::ContainerClick {
     click
         .changed
-        .retain_mut(|(_, prediction)| remap_slot_hash(prediction));
-    if !remap_slot_hash(&mut click.carried) {
+        .retain_mut(|(_, prediction)| remap_slot_hash(prediction, target));
+    if !remap_slot_hash(&mut click.carried, target) {
         click.carried = None;
     }
     click
@@ -619,6 +686,8 @@ mod tests {
             changed: vec![(0, None), (54, Some(Hashed::of(&Stack::new(128, 2))))],
             carried: None,
         };
+        let native = remap_container_click_for(click.clone(), BlockStateTarget::Native12111);
+        assert_eq!(native.changed[1].1.as_ref().unwrap().item, 128);
         let clicked = remap_container_click(click);
         assert!(clicked.changed[0].1.is_none());
         let stack = clicked.changed[1].1.as_ref().unwrap();
@@ -675,6 +744,7 @@ mod tests {
     #[test]
     fn block_entity_ids_are_translated_and_retired_beds_have_no_engine_type() {
         assert_eq!(block_entity_type_to_engine(27), Some(26)); // Barrel.
+        assert_eq!(BlockStateTarget::Native12111.block_entity(25), Some(25));
         assert_eq!(block_entity_type_to_engine(25), None); // Bed.
         assert_eq!(block_entity_type_to_engine(-1), None);
     }
@@ -733,7 +803,7 @@ mod tests {
         };
         let native =
             remap_entity_spawn_with_blocks(spawn.clone(), BlockStateTarget::Native12111).unwrap();
-        assert_eq!((native.kind, native.data), (52, 279));
+        assert_eq!((native.kind, native.data), (51, 279));
         let mapped = remap_entity_spawn(spawn).unwrap();
         assert_eq!((mapped.kind, mapped.data), (52, 294));
     }

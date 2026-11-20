@@ -135,7 +135,7 @@ impl Wire {
         writer: &mut ConnWriter,
         packet: play::Serverbound,
     ) -> horizon_protocol::Result<()> {
-        if matches!(self, Self::Radio12111(_)) {
+        if let Self::Radio12111(blocks) = self {
             match packet {
                 play::Serverbound::AcceptTeleportation(p) => {
                     writer.send(&radio_12111::encode_teleport_ack(p.id))?;
@@ -151,7 +151,7 @@ impl Wire {
                 }
                 play::Serverbound::ContainerClick(click) => {
                     let packet = play::Serverbound::ContainerClick(
-                        radio_12111::remap_container_click(click),
+                        radio_12111::remap_container_click_for(click, blocks),
                     );
                     return self.send(writer, State::Play, &packet.encode());
                 }
@@ -221,7 +221,9 @@ impl Wire {
             }
             canonical::LEVEL_CHUNK_WITH_LIGHT => {
                 // Section palettes still contain 1.21.11 state IDs and wire bytes.
-                play::Clientbound::LevelChunkWithLight(radio_12111::decode_level_chunk(payload)?)
+                play::Clientbound::LevelChunkWithLight(radio_12111::decode_level_chunk_for(
+                    payload, blocks,
+                )?)
             }
             canonical::BLOCK_UPDATE => {
                 let play::Clientbound::BlockUpdate(mut p) = play::Clientbound::decode(id, payload)?
@@ -239,7 +241,7 @@ impl Wire {
                 else {
                     unreachable!();
                 };
-                let Some(kind) = radio_12111::block_entity_type_to_engine(p.kind) else {
+                let Some(kind) = blocks.block_entity(p.kind) else {
                     return Ok(None);
                 };
                 p.kind = kind;
@@ -283,7 +285,7 @@ impl Wire {
             canonical::CONTAINER_SET_CONTENT
             | canonical::CONTAINER_SET_SLOT
             | canonical::SET_PLAYER_INVENTORY
-            | canonical::SET_CURSOR_ITEM => radio_12111::decode_inventory(id, payload)?,
+            | canonical::SET_CURSOR_ITEM => radio_12111::decode_inventory_for(id, payload, blocks)?,
             canonical::PLAYER_POSITION
             | canonical::OPEN_SCREEN
             | canonical::CONTAINER_CLOSE

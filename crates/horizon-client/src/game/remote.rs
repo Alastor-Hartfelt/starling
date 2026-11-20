@@ -57,7 +57,7 @@ use std::{
 };
 use winit::{event::MouseButton, keyboard::KeyCode};
 
-type BuiltinCache = Vec<(std::path::PathBuf, Arc<Builtin>)>;
+type BuiltinCache = Vec<(std::path::PathBuf, bool, Arc<Builtin>)>;
 static BUILTIN: std::sync::Mutex<BuiltinCache> = std::sync::Mutex::new(Vec::new());
 
 /// The prepared resources' `registries.json`, parsed once per root: the
@@ -66,12 +66,23 @@ static BUILTIN: std::sync::Mutex<BuiltinCache> = std::sync::Mutex::new(Vec::new(
 /// `None` when it is missing or invalid (not cached: a fixed install can
 /// join again).
 pub(super) fn builtin_registries(root: &std::path::Path) -> Option<Arc<Builtin>> {
+    builtin_for_session(root, false)
+}
+
+fn builtin_for_session(root: &std::path::Path, native_radio: bool) -> Option<Arc<Builtin>> {
     let mut cache = BUILTIN.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, builtin)) = cache.iter().find(|(cached, _)| cached == root) {
+    if let Some((_, _, builtin)) = cache
+        .iter()
+        .find(|(cached, native, _)| cached == root && *native == native_radio)
+    {
         return Some(builtin.clone());
     }
-    let builtin = Arc::new(Builtin::find(root).and_then(|p| Builtin::load(&p).ok())?);
-    cache.push((root.to_owned(), builtin.clone()));
+    let mut builtin = Builtin::find(root).and_then(|p| Builtin::load(&p).ok())?;
+    if native_radio {
+        horizon_protocol::radio_12111::canonicalize_component_registry(&mut builtin);
+    }
+    let builtin = Arc::new(builtin);
+    cache.push((root.to_owned(), native_radio, builtin.clone()));
     Some(builtin)
 }
 
@@ -999,7 +1010,6 @@ impl Game<'_> {
             self.world_biomes_base = None;
         }
         let root = self.options.resources.clone();
-        let builtin = builtin_registries(&root).ok_or("Resources are incomplete: registries.json is missing or invalid. Click \"Prepare again\" in the launcher (or run horizon-prepare), then try again.")?;
         let lang = Arc::new(horizon_client::net::load_language(&root));
         // Options.createInformation: what the server learns about this player,
         // sent again when one of those options changes.
@@ -1019,6 +1029,8 @@ impl Game<'_> {
             && cookies.is_none()
             && !lan
             && !address.starts_with(horizon_client::net::FRIEND);
+        let native_radio = radio_12111 && self.pack.assets.registry.data_version() == 4671;
+        let builtin = builtin_for_session(&root, native_radio).ok_or("Resources are incomplete: registries.json is missing or invalid. Click \"Prepare again\" in the launcher (or run horizon-prepare), then try again.")?;
         let auth = self.auth();
         let name = match (&auth, &local) {
             (Some(a), None) => a.name.as_str(),
@@ -1045,7 +1057,7 @@ impl Game<'_> {
                 info.clone(),
                 lang.clone(),
                 root.clone(),
-                if self.pack.assets.registry.data_version() == 4671 {
+                if native_radio {
                     horizon_protocol::radio_12111::BlockStateTarget::Native12111
                 } else {
                     horizon_protocol::radio_12111::BlockStateTarget::Engine26_3
