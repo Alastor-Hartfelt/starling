@@ -533,6 +533,35 @@ fn read_nested_item_slot(
     for _ in 0..added {
         let kind = item_registry_id(reader.varint()?, &item_types::COMPONENTS)?;
         let mut value = match kind {
+            component::TRIM => {
+                let material = reader.varint()?;
+                if material == 0 {
+                    reader.string(32767)?;
+                    let overrides = reader.count(reader.remaining() / 2)?;
+                    for _ in 0..overrides {
+                        reader.string(32767)?;
+                        reader.string(32767)?;
+                    }
+                    reader.nbt()?;
+                }
+                let pattern = reader.varint()?;
+                if pattern == 0 {
+                    reader.string(32767)?;
+                    reader.nbt()?;
+                    reader.bool()?;
+                }
+                if material < 0 || pattern < 0 {
+                    return Err(crate::Error::new("invalid 1.21.11 armor trim holder"));
+                }
+                // Inline trims have no synchronized registry ID to hand to the renderer.
+                if material == 0 || pattern == 0 {
+                    continue;
+                }
+                Component::Trim {
+                    material: material - 1,
+                    pattern: pattern - 1,
+                }
+            }
             component::CONTAINER | component::BUNDLE_CONTENTS | component::CHARGED_PROJECTILES => {
                 let count = reader.count(reader.remaining().min(1024))?;
                 let items = (0..count)
@@ -579,6 +608,8 @@ fn read_nested_item_slot(
             | component::REPAIRABLE
             | component::GLIDER
             | component::BLOCK_STATE
+            | component::BASE_COLOR
+            | component::PROFILE
             | component::FIREWORKS
             | component::FIREWORK_EXPLOSION
             | component::ENCHANTMENT_GLINT_OVERRIDE => Component::read(kind, reader)?,
@@ -928,6 +959,43 @@ mod tests {
             stack.component(component::CUSTOM_MODEL_DATA),
             Some(Component::CustomModelData { colors, .. }) if colors.as_slice() == [0xff_99_cc]
         ));
+    }
+
+    #[test]
+    fn inventory_snapshot_reads_trimmed_gear_shield_colors_and_head_profiles() {
+        let mut w = Writer::new();
+        for value in [0, 1, 4, 1, 928, 1, 0, 54, 2, 3, 1, 928, 1, 0, 71, 14] {
+            w.varint(value);
+        }
+        for value in [1, 928, 1, 0, 68, 0] {
+            w.varint(value);
+        }
+        w.bool(true);
+        w.string("Player");
+        w.bool(false);
+        w.varint(0);
+        for _ in 0..4 {
+            w.bool(false);
+        }
+        // A final ordinary stack and an empty cursor.
+        for value in [8, 1, 0, 0, 0] {
+            w.varint(value);
+        }
+
+        let play::Clientbound::ContainerSetContent(packet) =
+            decode_inventory(ids::play::clientbound::CONTAINER_SET_CONTENT, &w.data).unwrap()
+        else {
+            panic!("expected inventory snapshot");
+        };
+        let component = |slot: usize, kind| packet.items[slot].as_ref().unwrap().component(kind);
+        assert_eq!(
+            component(0, component::TRIM),
+            Some(&Component::Trim { material: 1, pattern: 2 })
+        );
+        assert!(component(1, component::BASE_COLOR).is_some());
+        assert!(matches!(component(2, component::PROFILE), Some(Component::Profile(_))));
+        assert_eq!(packet.items[3].as_ref().unwrap().count, 8);
+        assert!(packet.carried.is_none());
     }
 
     #[test]
