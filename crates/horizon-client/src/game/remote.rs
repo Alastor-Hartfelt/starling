@@ -3738,13 +3738,18 @@ impl Game<'_> {
                 if !triggered {
                     let state = self.world.block(p.pos[0], p.pos[1], p.pos[2]);
                     let block = &self.res.facts().get(state).name;
-                    let named = self.remote.as_ref().and_then(|r| {
+                    let matches_block = self.remote.as_ref().is_some_and(|r| {
+                        if let Some(target) = r.session.radio_block_state_target() {
+                            return target.block_event_state(p.block).is_some_and(|state| {
+                                &self.res.facts().get(BlockStateId(state as u32)).name == block
+                            });
+                        }
                         r.builtin
-                            .get("minecraft:block")?
-                            .name(p.block)
-                            .map(str::to_owned)
+                            .get("minecraft:block")
+                            .and_then(|registry| registry.name(p.block))
+                            == Some(&**block)
                     });
-                    if named.as_deref() == Some(&**block) {
+                    if matches_block {
                         self.block_entity_event(p.pos, i32::from(p.b0), i32::from(p.b1));
                     }
                 }

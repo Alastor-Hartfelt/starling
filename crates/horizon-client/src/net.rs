@@ -320,6 +320,7 @@ impl Wire {
             | canonical::CONTAINER_SET_DATA
             | canonical::SET_HELD_SLOT
             | canonical::BLOCK_CHANGED_ACK
+            | canonical::BLOCK_EVENT
             | canonical::PLAYER_INFO_UPDATE
             | canonical::PLAYER_INFO_REMOVE
             | canonical::REMOVE_ENTITIES
@@ -393,6 +394,13 @@ pub struct Session {
     far: Arc<crate::lod_net::Inbox>,
 }
 impl Session {
+    pub fn radio_block_state_target(&self) -> Option<radio_12111::BlockStateTarget> {
+        match self.wire {
+            Wire::Current => None,
+            Wire::Radio12111(target) => Some(target),
+        }
+    }
+
     /// Start connecting in the background, as `auth`'s account when there is one.
     pub fn connect(
         address: &str,
@@ -1630,6 +1638,35 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radio_block_events_preserve_container_lid_actions() {
+        use radio_12111::BlockStateTarget::{Engine26_3, Native12111};
+
+        for target in [Native12111, Engine26_3] {
+            let wire = Wire::Radio12111(target);
+            let id = wire.version().clientbound_id(State::Play, 0x07).unwrap();
+            for (block, source_state) in [(200, 3786), (399, 9374), (675, 14662), (690, 14752)] {
+                assert_eq!(target.block_event_state(block), target.state(source_state));
+                for viewers in [0, 1] {
+                    let mut payload = horizon_protocol::buf::Writer::new();
+                    payload.i64(0);
+                    payload.u8(1);
+                    payload.u8(viewers);
+                    payload.varint(block);
+                    assert_eq!(
+                        wire.decode_play(id, &payload.data).unwrap(),
+                        Some(play::Clientbound::BlockEvent(play::BlockEvent {
+                            pos: [0, 0, 0],
+                            b0: 1,
+                            b1: viewers,
+                            block,
+                        }))
+                    );
+                }
+            }
+        }
+    }
 
     /// Launchers find the last server joined in `latest.log` by vanilla's line.
     #[test]

@@ -20,6 +20,32 @@ def states(path):
     return result
 
 
+def first_states_by_block_id(registries, states_by_key):
+    entries = json.loads(registries.read_text())["minecraft:block"]["entries"]
+    first = {}
+    for (name, _), state_id in states_by_key.items():
+        first[name] = min(first.get(name, state_id), state_id)
+    if set(first) != set(entries):
+        raise ValueError("source block and registry reports list different blocks")
+    block_ids = {entry["protocol_id"]: name for name, entry in entries.items()}
+    if sorted(block_ids) != list(range(len(first))):
+        raise ValueError("source block registry IDs must be unique and contiguous")
+    return [first[block_ids[i]] for i in range(len(first))]
+
+
+def format_block_events(states):
+    lines = [
+        "",
+        "// First 1.21.11 state ID for each 1.21.11 block registry ID.",
+        "#[rustfmt::skip]",
+        "pub(super) const BLOCK_EVENT_STATES: &[u16] = &[",
+    ]
+    for i in range(0, len(states), 12):
+        lines.append("    " + ", ".join(map(str, states[i:i + 12])) + ",")
+    lines.append("];")
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="1.21.11 generated/reports/blocks.json")
@@ -46,6 +72,9 @@ def main():
     ]
     lines.extend(f"    ({old}, {new})," for old, new in starts)
     lines.append("];")
+    lines.extend(format_block_events(first_states_by_block_id(
+        args.source.with_name("registries.json"), source
+    )))
     args.output.write_text("\n".join(lines) + "\n")
 
 

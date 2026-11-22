@@ -398,6 +398,12 @@ pub enum BlockStateTarget {
 }
 
 impl BlockStateTarget {
+    /// A representative state identifies the block in the client's loaded facts.
+    pub fn block_event_state(self, block: i32) -> Option<i32> {
+        let source = *block_state_ranges::BLOCK_EVENT_STATES.get(usize::try_from(block).ok()?)?;
+        self.state(i32::from(source))
+    }
+
     pub fn state(self, source: i32) -> Option<i32> {
         match self {
             Self::Native12111 => (0..block_state_ranges::SOURCE_LEN as i32)

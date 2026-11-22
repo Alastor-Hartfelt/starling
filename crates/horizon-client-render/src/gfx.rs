@@ -1184,6 +1184,8 @@ pub struct Renderer {
     pub suspended: bool,
     /// Suspended without a window at all (`suspend`), not just minimized.
     pub detached: bool,
+    /// The window is back but still needs a usable size or a new surface.
+    resume_pending: bool,
     /// Consecutive frames whose surface acquisition failed validation. The
     /// first gets the swapchain a fresh configuration; later ones reattach
     /// the window, as a lost surface does.
@@ -4353,6 +4355,7 @@ impl Renderer {
             info,
             suspended: !drawable_size(size.width, size.height, max_side),
             detached: false,
+            resume_pending: false,
             acquire_validation_failures: 0,
             surface_unconfigured: false,
             drawn_sections: 0,
@@ -4487,6 +4490,9 @@ impl Renderer {
     /// as the spare (`release_surface`): `resume` would take it back, on a window that is gone,
     /// and draw to nothing (a black screen on the way back from the browser or the file picker).
     pub fn suspend(&mut self) {
+        // The present and submit threads can still hold the old swapchain.
+        self.frame_gen.stop();
+        self.queue.wait();
         self.surface = None;
         *self
             .spare_surface
@@ -4494,21 +4500,27 @@ impl Renderer {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.suspended = true;
         self.detached = true;
+        self.resume_pending = false;
     }
     /// The window is back, maybe at another size: a new surface on it.
     pub fn resume(&mut self, width: u32, height: u32) -> Result<()> {
+        self.resume_pending = self.detached;
         if !drawable_size(width, height, self.device.limits().max_texture_dimension_2d) {
             return Ok(());
         }
-        let resized = [width, height] != [self.config.width, self.config.height];
+        let previous_size = [self.config.width, self.config.height];
         self.config.width = width;
         self.config.height = height;
-        self.recreate_surface()?;
-        if resized {
+        if let Err(error) = self.recreate_surface() {
+            [self.config.width, self.config.height] = previous_size;
+            return Err(error);
+        }
+        if [width, height] != previous_size {
             self.depth = Self::depth(&self.device, &self.config);
         }
         self.suspended = false;
         self.detached = false;
+        self.resume_pending = false;
         Ok(())
     }
     /// Reattach a window after surface loss or a failed renderer replacement.
@@ -4606,6 +4618,16 @@ impl Renderer {
     /// Follows the window to `width` x `height`. A size the swapchain can't take
     /// ([`drawable_size`]) keeps the last one and draws nothing until the next.
     pub fn resize(&mut self, width: u32, height: u32) {
+        if self.detached {
+            // Android can send a resize before the native window is back, or
+            // supply the first usable size after the resume callback.
+            if self.resume_pending
+                && let Err(error) = self.resume(width, height)
+            {
+                log::warn!("Horizon renderer: reattaching to the resized window: {error}");
+            }
+            return;
+        }
         let max = self.device.limits().max_texture_dimension_2d;
         self.suspended = !drawable_size(width, height, max);
         if self.suspended {
