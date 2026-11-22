@@ -134,6 +134,7 @@ impl Wire {
         self,
         writer: &mut ConnWriter,
         packet: play::Serverbound,
+        sneaking: bool,
     ) -> horizon_protocol::Result<()> {
         if let Self::Radio12111(blocks) = self {
             match packet {
@@ -154,6 +155,15 @@ impl Wire {
                         radio_12111::remap_container_click_for(click, blocks),
                     );
                     return self.send(writer, State::Play, &packet.encode());
+                }
+                play::Serverbound::Attack(attack) => {
+                    // 1.21.11 uses the attack action of Interact rather than a dedicated packet.
+                    let mut body = horizon_protocol::buf::Writer::new();
+                    body.varint(ids::play::serverbound::INTERACT);
+                    body.varint(attack.id);
+                    body.varint(1);
+                    body.bool(sneaking);
+                    return self.send(writer, State::Play, &body.data);
                 }
                 play::Serverbound::PlayerAction(action) => {
                     if let Some(action) = radio_12111::remap_player_action(action) {
@@ -346,6 +356,7 @@ impl Wire {
 pub struct Session {
     events: Receiver<Event>,
     wire: Wire,
+    sneaking: AtomicBool,
     writer: Arc<Mutex<Option<ConnWriter>>>,
     /// The connection is in configuration (else in play). Changed only
     /// with `writer` locked, as the packet that switches is sent.
@@ -572,6 +583,7 @@ impl Session {
         Self {
             events,
             wire,
+            sneaking: AtomicBool::new(false),
             writer,
             configuring,
             thread,
@@ -608,8 +620,13 @@ impl Session {
         if self.configuring.load(Ordering::Relaxed) {
             return;
         }
+        if let play::Serverbound::PlayerInput(input) = &packet
+            && matches!(self.wire, Wire::Radio12111(_))
+        {
+            self.sneaking.store(input.flags & 0x20 != 0, Ordering::Relaxed);
+        }
         if let Some(w) = writer.as_mut()
-            && self.wire.send_play(w, packet).is_err()
+            && self.wire.send_play(w, packet, self.sneaking.load(Ordering::Relaxed)).is_err()
         {
             w.shutdown();
         }
@@ -1174,7 +1191,7 @@ fn receive_play(
             let writer = writer
                 .as_mut()
                 .ok_or_else(|| Reason::plain("Disconnected"))?;
-            wire.send_play(writer, p)
+            wire.send_play(writer, p, false)
                 .map_err(|e| Reason::plain(connection_lost(e, lang)))
         };
         match packet {
@@ -1638,6 +1655,7 @@ mod tests {
                 yaw: 0.0,
                 pitch: 0.0,
             }),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1663,6 +1681,38 @@ mod tests {
             decode(0x4c, &[7, 0]),
             play::Clientbound::RemoveMobEffect(play::RemoveMobEffect { id: 7, effect: 0 })
         );
+    }
+
+    #[test]
+    fn radio_encodes_entity_attacks_and_bow_release() {
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut server = Connection::from_stream(peer).unwrap();
+        let (_, mut writer) = Connection::from_stream(stream).unwrap().split();
+
+        wire.send_play(
+            &mut writer,
+            play::Serverbound::Attack(play::Attack { id: 300 }),
+            true,
+        )
+        .unwrap();
+        assert_eq!(server.recv().unwrap(), (0x19, vec![0xac, 2, 1, 1]));
+
+        wire.send_play(
+            &mut writer,
+            play::Serverbound::PlayerAction(play::PlayerAction {
+                action: 6,
+                pos: [0; 3],
+                direction: 0,
+                sequence: 0,
+            }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(server.recv().unwrap(), (0x28, vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
     }
 
     #[test]
