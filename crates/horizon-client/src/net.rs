@@ -339,6 +339,9 @@ impl Wire {
             | canonical::SET_SCORE
             | canonical::RESET_SCORE
             | canonical::SET_HEALTH
+            | canonical::DAMAGE_EVENT
+            | canonical::HURT_ANIMATION
+            | canonical::ENTITY_EVENT
             | canonical::UPDATE_MOB_EFFECT
             | canonical::REMOVE_MOB_EFFECT
             | canonical::KEEP_ALIVE
@@ -1680,6 +1683,33 @@ mod tests {
         assert_eq!(
             decode(0x4c, &[7, 0]),
             play::Clientbound::RemoveMobEffect(play::RemoveMobEffect { id: 7, effect: 0 })
+        );
+    }
+
+    #[test]
+    fn radio_forwards_damage_and_death_feedback() {
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let decode = |id, payload: &[u8]| {
+            let id = wire.version().clientbound_id(State::Play, id).unwrap();
+            wire.decode_play(id, payload).unwrap().unwrap()
+        };
+        assert_eq!(
+            decode(0x19, &[42, 0, 0, 0, 0]),
+            play::Clientbound::DamageEvent(play::DamageEvent {
+                id: 42,
+                source_type: 0,
+                cause: None,
+                direct: None,
+                position: None,
+            })
+        );
+        assert_eq!(
+            decode(0x29, &[42, 0, 0, 0, 0]),
+            play::Clientbound::HurtAnimation(play::HurtAnimation { id: 42, yaw: 0.0 })
+        );
+        assert_eq!(
+            decode(0x22, &[0, 0, 0, 42, 3]),
+            play::Clientbound::EntityEvent(play::EntityEvent { id: 42, event: 3 })
         );
     }
 
