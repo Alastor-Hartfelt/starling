@@ -1756,7 +1756,7 @@ mod tests {
     }
 
     #[test]
-    fn radio_encodes_entity_attacks_and_bow_release() {
+    fn radio_encodes_entity_attacks_bow_release_and_respawn() {
         let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -1784,7 +1784,18 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(server.recv().unwrap(), (0x28, vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(
+            server.recv().unwrap(),
+            (0x28, vec![5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        );
+
+        wire.send_play(
+            &mut writer,
+            play::Serverbound::ClientCommand(play::ClientCommand { action: 0 }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(server.recv().unwrap(), (0x0b, vec![0]));
     }
 
     #[test]
@@ -2051,6 +2062,7 @@ mod tests {
             let mut session = Session {
                 events,
                 wire: Wire::Current,
+                sneaking: AtomicBool::new(false),
                 writer: writer.clone(),
                 configuring: Arc::new(AtomicBool::new(false)),
                 thread: Some(thread),
@@ -2158,6 +2170,7 @@ mod tests {
         let session = Session {
             events,
             wire: Wire::Current,
+            sneaking: AtomicBool::new(false),
             writer: Arc::new(Mutex::new(Some(writer))),
             configuring: Arc::new(AtomicBool::new(false)),
             thread: None,
