@@ -181,6 +181,7 @@ impl Wire {
                 | play::Serverbound::MovePlayerStatus(_)
                 | play::Serverbound::PlayerInput(_)
                 | play::Serverbound::SetCarriedItem(_)
+                | play::Serverbound::UseItem(_)
                 | play::Serverbound::UseItemOn(_) => {}
                 // Only send the supported subset of protocol 774 play packets.
                 _ => return Ok(()),
@@ -328,6 +329,8 @@ impl Wire {
             | canonical::SET_SCORE
             | canonical::RESET_SCORE
             | canonical::SET_HEALTH
+            | canonical::UPDATE_MOB_EFFECT
+            | canonical::REMOVE_MOB_EFFECT
             | canonical::KEEP_ALIVE
             | canonical::PING
             | canonical::DISCONNECT
@@ -1616,6 +1619,50 @@ mod tests {
             assert_eq!(update.section, [-2, 4, 5]);
             assert_eq!(update.changes, [(leaves << 12) | 0xF71, 1 << 12]);
         }
+    }
+
+    #[test]
+    fn radio_potion_use_and_effect_updates_pass_through() {
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut server = Connection::from_stream(peer).unwrap();
+        let (_, mut writer) = Connection::from_stream(stream).unwrap().split();
+        wire.send_play(
+            &mut writer,
+            play::Serverbound::UseItem(play::UseItem {
+                hand: 1,
+                sequence: 42,
+                yaw: 0.0,
+                pitch: 0.0,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            server.recv().unwrap(),
+            (0x40, vec![1, 42, 0, 0, 0, 0, 0, 0, 0, 0])
+        );
+
+        let decode = |id, payload: &[u8]| {
+            let id = wire.version().clientbound_id(State::Play, id).unwrap();
+            wire.decode_play(id, payload).unwrap().unwrap()
+        };
+        assert_eq!(
+            decode(0x82, &[7, 0, 1, 0x90, 0x03, 6]),
+            play::Clientbound::UpdateMobEffect(play::UpdateMobEffect {
+                id: 7,
+                effect: 0,
+                amplifier: 1,
+                duration: 400,
+                flags: 6,
+            })
+        );
+        assert_eq!(
+            decode(0x4c, &[7, 0]),
+            play::Clientbound::RemoveMobEffect(play::RemoveMobEffect { id: 7, effect: 0 })
+        );
     }
 
     #[test]
