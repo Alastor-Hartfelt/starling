@@ -609,6 +609,7 @@ fn read_nested_item_slot(
             | component::GLIDER
             | component::BLOCK_STATE
             | component::BASE_COLOR
+            | component::BANNER_PATTERNS
             | component::PROFILE
             | component::FIREWORKS
             | component::FIREWORK_EXPLOSION
@@ -964,7 +965,7 @@ mod tests {
     #[test]
     fn inventory_snapshot_reads_trimmed_gear_shield_colors_and_head_profiles() {
         let mut w = Writer::new();
-        for value in [0, 1, 4, 1, 928, 1, 0, 54, 2, 3, 1, 928, 1, 0, 71, 14] {
+        for value in [0, 1, 4, 1, 928, 1, 0, 54, 2, 3, 1, 928, 2, 0, 71, 14, 70, 1, 1, 14] {
             w.varint(value);
         }
         for value in [1, 928, 1, 0, 68, 0] {
@@ -993,6 +994,10 @@ mod tests {
             Some(&Component::Trim { material: 1, pattern: 2 })
         );
         assert!(component(1, component::BASE_COLOR).is_some());
+        assert!(matches!(
+            component(1, component::BANNER_PATTERNS),
+            Some(Component::BannerPatterns(layers)) if layers.len() == 1
+        ));
         assert!(matches!(component(2, component::PROFILE), Some(Component::Profile(_))));
         assert_eq!(packet.items[3].as_ref().unwrap().count, 8);
         assert!(packet.carried.is_none());
