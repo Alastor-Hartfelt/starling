@@ -172,6 +172,9 @@ impl Wire {
                     }
                     return Ok(());
                 }
+                // 1.21.11 supports respawn here. Stats require a separate
+                // version-specific registry mapping, and game rules use a newer action.
+                play::Serverbound::ClientCommand(ref command) if command.action == 0 => {}
                 play::Serverbound::KeepAlive(_)
                 | play::Serverbound::Pong(_)
                 | play::Serverbound::CookieResponse(_)
@@ -190,6 +193,8 @@ impl Wire {
                 | play::Serverbound::MovePlayerRot(_)
                 | play::Serverbound::MovePlayerStatus(_)
                 | play::Serverbound::PlayerInput(_)
+                | play::Serverbound::PlayerCommand(_)
+                | play::Serverbound::PlayerAbilities(_)
                 | play::Serverbound::SetCarriedItem(_)
                 | play::Serverbound::UseItem(_)
                 | play::Serverbound::UseItemOn(_) => {}
@@ -339,6 +344,18 @@ impl Wire {
             | canonical::SET_SCORE
             | canonical::RESET_SCORE
             | canonical::SET_HEALTH
+            | canonical::SET_EXPERIENCE
+            | canonical::BOSS_EVENT
+            | canonical::SET_ACTION_BAR_TEXT
+            | canonical::SET_TITLE_TEXT
+            | canonical::SET_SUBTITLE_TEXT
+            | canonical::SET_TITLES_ANIMATION
+            | canonical::CLEAR_TITLES
+            | canonical::CHANGE_DIFFICULTY
+            | canonical::COOLDOWN
+            | canonical::ANIMATE
+            | canonical::SET_PASSENGERS
+            | canonical::TAKE_ITEM_ENTITY
             | canonical::DAMAGE_EVENT
             | canonical::HURT_ANIMATION
             | canonical::ENTITY_EVENT
@@ -1683,6 +1700,31 @@ mod tests {
         assert_eq!(
             decode(0x4c, &[7, 0]),
             play::Clientbound::RemoveMobEffect(play::RemoveMobEffect { id: 7, effect: 0 })
+        );
+    }
+
+    #[test]
+    fn radio_forwards_experience_and_pickup_updates() {
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let decode = |id, payload: &[u8]| {
+            let id = wire.version().clientbound_id(State::Play, id).unwrap();
+            wire.decode_play(id, payload).unwrap().unwrap()
+        };
+        assert_eq!(
+            decode(0x65, &[0x3f, 0, 0, 0, 4, 42]),
+            play::Clientbound::SetExperience(play::SetExperience {
+                progress: 0.5,
+                level: 4,
+                total: 42,
+            })
+        );
+        assert_eq!(
+            decode(0x7a, &[9, 42, 3]),
+            play::Clientbound::TakeItemEntity(play::TakeItemEntity {
+                item: 9,
+                player: 42,
+                amount: 3,
+            })
         );
     }
 
