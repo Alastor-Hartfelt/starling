@@ -375,6 +375,8 @@ impl Wire {
 }
 
 pub struct Session {
+    #[cfg(target_os = "android")]
+    foreground: Option<MultiplayerForeground>,
     events: Receiver<Event>,
     wire: Wire,
     sneaking: AtomicBool,
@@ -393,6 +395,27 @@ pub struct Session {
     /// The far terrain requests waiting for the server (`lod_net`).
     far: Arc<crate::lod_net::Inbox>,
 }
+
+#[cfg(target_os = "android")]
+struct MultiplayerForeground(String);
+
+#[cfg(target_os = "android")]
+impl MultiplayerForeground {
+    fn start(lang: &Language) -> Self {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let reason = format!("multiplayer-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+        crate::platform::keep_working(&reason, &tr(lang, "menu.multiplayer"), true);
+        Self(reason)
+    }
+}
+
+#[cfg(target_os = "android")]
+impl Drop for MultiplayerForeground {
+    fn drop(&mut self) {
+        crate::platform::keep_working(&self.0, "", false);
+    }
+}
+
 impl Session {
     pub fn radio_block_state_target(&self) -> Option<radio_12111::BlockStateTarget> {
         match self.wire {
@@ -573,6 +596,9 @@ impl Session {
         let far = Arc::new(crate::lod_net::Inbox::default());
         let thread_far = far.clone();
         let (address_owned, name_owned) = (address.to_owned(), name.to_owned());
+        // Android may refuse to start a foreground service after the app is hidden.
+        #[cfg(target_os = "android")]
+        let foreground = local.is_none().then(|| MultiplayerForeground::start(&lang));
         let thread = std::thread::Builder::new()
             .name("horizon-net".into())
             .spawn(move || {
@@ -609,6 +635,8 @@ impl Session {
             .ok();
         let debug = std::env::var_os("HORIZON_NET_DEBUG").is_some();
         Self {
+            #[cfg(target_os = "android")]
+            foreground: foreground.filter(|_| thread.is_some()),
             events,
             wire,
             sneaking: AtomicBool::new(false),
@@ -760,6 +788,8 @@ impl Session {
             w.shutdown();
         }
         drop(self.thread.take());
+        #[cfg(target_os = "android")]
+        drop(self.foreground.take());
     }
 }
 impl Drop for Session {
@@ -2097,6 +2127,8 @@ mod tests {
                 let _ = finished.send(());
             });
             let mut session = Session {
+                #[cfg(target_os = "android")]
+                foreground: None,
                 events,
                 wire: Wire::Current,
                 sneaking: AtomicBool::new(false),
@@ -2205,6 +2237,8 @@ mod tests {
         let (mut reader, writer) = Connection::local(client).split();
         let (send, events) = channel();
         let session = Session {
+            #[cfg(target_os = "android")]
+            foreground: None,
             events,
             wire: Wire::Current,
             sneaking: AtomicBool::new(false),

@@ -9,12 +9,13 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.util.Log;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
  * Keeps the game's process in the foreground, with a notification, while it waits for something
- * that happens outside it: the Microsoft sign-in in the browser, the game files downloading.
+ * that happens outside it: Microsoft sign-in, game file downloads, or an active multiplayer session.
  * Many phones cut a background app's internet, or end it (battery and data savers, the maker's
  * own rules: a sign-in stopped with "Could not reach Microsoft"); a foreground service is spared
  * both. It runs while one reason holds it (StarlingActivity.keepWorking, from the game).
@@ -22,6 +23,8 @@ import java.util.Map;
 public final class WorkService extends Service {
     private static final String CHANNEL = "work";
     private static final int NOTIFICATION = 1;
+    // Matches the reason held by MultiplayerForeground in net.rs.
+    private static final String MULTIPLAYER_PREFIX = "multiplayer-";
 
     /** Why it runs, each with the line its notification shows; the newest shows. */
     private static final Map<String, String> REASONS = new LinkedHashMap<>();
@@ -54,16 +57,9 @@ public final class WorkService extends Service {
             }
         } catch (RuntimeException e) {
             // Android refused (started from the background): the wait goes on without it.
-        }
-    }
-
-    private static String line() {
-        synchronized (REASONS) {
-            String last = "Starling is working";
-            for (String line : REASONS.values()) {
-                last = line;
+            if (on && reason.startsWith(MULTIPLAYER_PREFIX)) {
+                Log.w("Starling", "Could not keep the multiplayer process in the foreground", e);
             }
-            return last;
         }
     }
 
@@ -81,24 +77,38 @@ public final class WorkService extends Service {
         } else {
             builder = new Notification.Builder(this);
         }
-        Notification notification = builder
-                .setSmallIcon(getApplicationInfo().icon)
-                .setContentTitle("Starling")
-                .setContentText(line())
-                .setOngoing(true)
-                .build();
-        try {
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(NOTIFICATION, notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-            } else {
-                startForeground(NOTIFICATION, notification);
-            }
-        } catch (RuntimeException e) {
-            stopSelf();
-            return START_NOT_STICKY;
-        }
         synchronized (REASONS) {
+            String line = "Starling is working";
+            boolean multiplayer = false;
+            for (Map.Entry<String, String> entry : REASONS.entrySet()) {
+                line = entry.getValue();
+                multiplayer |= entry.getKey().startsWith(MULTIPLAYER_PREFIX);
+            }
+            Notification notification = builder
+                    .setSmallIcon(getApplicationInfo().icon)
+                    .setContentTitle("Starling")
+                    .setContentText(line)
+                    .setOngoing(true)
+                    .build();
+            try {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+                    if (multiplayer && Build.VERSION.SDK_INT >= 34) {
+                        type = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+                    } else if (REASONS.isEmpty() && getForegroundServiceType() != 0) {
+                        type = getForegroundServiceType();
+                    }
+                    startForeground(NOTIFICATION, notification, type);
+                } else {
+                    startForeground(NOTIFICATION, notification);
+                }
+            } catch (RuntimeException e) {
+                if (multiplayer) {
+                    Log.w("Starling", "Could not promote the multiplayer foreground service", e);
+                }
+                stopSelfResult(startId);
+                return START_NOT_STICKY;
+            }
             if (REASONS.isEmpty()) {
                 stopForeground(true);
                 // A later request must not be stopped by this command's completion.
