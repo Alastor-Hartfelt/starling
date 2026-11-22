@@ -610,6 +610,8 @@ fn read_nested_item_slot(
             | component::BLOCK_STATE
             | component::BASE_COLOR
             | component::BANNER_PATTERNS
+            | component::WRITABLE_BOOK_CONTENT
+            | component::WRITTEN_BOOK_CONTENT
             | component::PROFILE
             | component::FIREWORKS
             | component::FIREWORK_EXPLOSION
@@ -1000,6 +1002,59 @@ mod tests {
         ));
         assert!(matches!(component(2, component::PROFILE), Some(Component::Profile(_))));
         assert_eq!(packet.items[3].as_ref().unwrap().count, 8);
+        assert!(packet.carried.is_none());
+    }
+
+    #[test]
+    fn container_snapshot_reads_past_written_and_writable_books() {
+        use horizon_world::nbt::Tag;
+
+        let mut w = Writer::new();
+        // Container 1, state 2, three slots. The first slot is a written book.
+        for value in [1, 2, 3, 1, 1221, 1, 0, 53] {
+            w.varint(value);
+        }
+        w.string("Notes");
+        w.bool(false); // No filtered title.
+        w.string("Author");
+        w.varint(0); // Original generation.
+        w.varint(1); // One page, with both raw and filtered text.
+        w.nbt(&Tag::String("Raw page".into()));
+        w.bool(true);
+        w.nbt(&Tag::String("Filtered page".into()));
+        w.bool(true); // Resolved.
+
+        for value in [1, 1220, 1, 0, 52, 1] {
+            w.varint(value);
+        }
+        w.string("Draft page");
+        w.bool(false);
+
+        // Eight stone in the final slot and an empty cursor.
+        for value in [8, 1, 0, 0, 0] {
+            w.varint(value);
+        }
+        let play::Clientbound::ContainerSetContent(packet) = decode_inventory_for(
+            ids::play::clientbound::CONTAINER_SET_CONTENT,
+            &w.data,
+            BlockStateTarget::Native12111,
+        )
+        .unwrap() else {
+            panic!("expected container snapshot");
+        };
+        let written = packet.items[0].as_ref().unwrap();
+        assert_eq!(written.item, 1221);
+        assert!(matches!(
+            written.component(component::WRITTEN_BOOK_CONTENT),
+            Some(Component::WrittenBook(book)) if book.pages.len() == 1
+        ));
+        let writable = packet.items[1].as_ref().unwrap();
+        assert_eq!(writable.item, 1220);
+        assert!(matches!(
+            writable.component(component::WRITABLE_BOOK_CONTENT),
+            Some(Component::WritableBook { pages, .. }) if pages.len() == 1
+        ));
+        assert_eq!(packet.items[2].as_ref().unwrap().count, 8);
         assert!(packet.carried.is_none());
     }
 
