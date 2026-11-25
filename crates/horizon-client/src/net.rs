@@ -208,6 +208,7 @@ impl Wire {
                 | play::Serverbound::PlayerCommand(_)
                 | play::Serverbound::PlayerAbilities(_)
                 | play::Serverbound::SetCarriedItem(_)
+                | play::Serverbound::SetBeacon(_)
                 | play::Serverbound::UseItem(_)
                 | play::Serverbound::UseItemOn(_) => {}
                 // Only send the supported subset of protocol 774 play packets.
@@ -329,6 +330,7 @@ impl Wire {
             canonical::ANIMATE => return radio_12111::decode_animation(payload),
             canonical::PLAYER_POSITION
             | canonical::OPEN_SCREEN
+            | canonical::MOUNT_SCREEN_OPEN
             | canonical::OPEN_BOOK
             | canonical::OPEN_SIGN_EDITOR
             | canonical::MAP_ITEM_DATA
@@ -337,7 +339,15 @@ impl Wire {
             | canonical::CONTAINER_SET_DATA
             | canonical::SET_HELD_SLOT
             | canonical::BLOCK_CHANGED_ACK
+            | canonical::BLOCK_DESTRUCTION
             | canonical::BLOCK_EVENT
+            | canonical::INITIALIZE_BORDER
+            | canonical::SET_BORDER_CENTER
+            | canonical::SET_BORDER_LERP_SIZE
+            | canonical::SET_BORDER_SIZE
+            | canonical::SET_BORDER_WARNING_DELAY
+            | canonical::SET_BORDER_WARNING_DISTANCE
+            | canonical::SET_CAMERA
             | canonical::PLAYER_INFO_UPDATE
             | canonical::PLAYER_INFO_REMOVE
             | canonical::REMOVE_ENTITIES
@@ -1703,6 +1713,71 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radio_mount_screen_and_border_updates_reach_the_game() {
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let decode = |id, payload: &[u8]| {
+            let id = wire.version().clientbound_id(State::Play, id).unwrap();
+            wire.decode_play(id, payload).unwrap().unwrap()
+        };
+        assert_eq!(
+            decode(0x28, &[7, 3, 0, 0, 0, 42]),
+            play::Clientbound::MountScreenOpen(play::MountScreenOpen {
+                container: 7,
+                columns: 3,
+                entity: 42,
+            })
+        );
+        let mut body = horizon_protocol::buf::Writer::new();
+        for value in [-25.0, 12.0, 60.0, 50.0] {
+            body.f64(value);
+        }
+        body.varlong(3_000_000_000);
+        for value in [29_999_984, 5, 15] {
+            body.varint(value);
+        }
+        assert_eq!(
+            decode(0x2a, &body.data),
+            play::Clientbound::InitializeBorder(play::InitializeBorder {
+                center_x: -25.0,
+                center_z: 12.0,
+                old_size: 60.0,
+                new_size: 50.0,
+                lerp_time: 3_000_000_000,
+                absolute_max_size: 29_999_984,
+                warning_blocks: 5,
+                warning_time: 15,
+            })
+        );
+        assert_eq!(
+            decode(0x5a, &[8]),
+            play::Clientbound::SetBorderWarningDistance(play::SetBorderWarningDistance {
+                blocks: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn radio_beacon_confirmation_sends_optional_effect_ids() {
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut server = Connection::from_stream(peer).unwrap();
+        let (_, mut writer) = Connection::from_stream(stream).unwrap().split();
+        wire.send_play(
+            &mut writer,
+            play::Serverbound::SetBeacon(play::SetBeacon {
+                primary: Some(0),
+                secondary: None,
+            }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(server.recv().unwrap(), (0x33, vec![1, 0, 0]));
+    }
 
     #[test]
     fn radio_map_sign_book_and_swing_packets_reach_the_game() {

@@ -366,7 +366,10 @@ impl Game<'_> {
         };
         for index in frames {
             let frame = &self.item_frames[index];
-            let name = frame.item.as_ref().and_then(|item| item.custom_name());
+            let name = frame
+                .item
+                .as_ref()
+                .and_then(|item| item.data()?.custom_name.as_ref());
             if !hooks && name.is_none() {
                 continue;
             }
@@ -401,7 +404,10 @@ impl Game<'_> {
                             f64::from(step[2] as f32 * 0.3),
                         ),
                     lines: vec![(
-                        Text::literal(text.or(name).unwrap_or_default()).resolve_legacy(),
+                        text.map(Text::literal)
+                            .or_else(|| name.map(horizon_client::entity_nbt::name_text))
+                            .unwrap_or_else(Text::empty)
+                            .resolve_legacy(),
                         0.0,
                     )],
                     light: self.world.light(
