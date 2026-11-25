@@ -208,6 +208,8 @@ impl Wire {
                 | play::Serverbound::PlayerCommand(_)
                 | play::Serverbound::PlayerAbilities(_)
                 | play::Serverbound::SetCarriedItem(_)
+                | play::Serverbound::PickItemFromBlock(_)
+                | play::Serverbound::PickItemFromEntity(_)
                 | play::Serverbound::SetBeacon(_)
                 | play::Serverbound::PlaceRecipe(_)
                 | play::Serverbound::RecipeBookChangeSettings(_)
@@ -334,6 +336,41 @@ impl Wire {
             canonical::RECIPE_BOOK_ADD | canonical::PLACE_GHOST_RECIPE => {
                 radio_12111::decode_recipe_book(id, payload, blocks)?
             }
+            canonical::SOUND => {
+                let play::Clientbound::Sound(mut sound) = play::Clientbound::decode(id, payload)?
+                else {
+                    unreachable!();
+                };
+                // Use the legacy registry names for bells. Other numeric
+                // sound IDs need their own registry mapping before playback.
+                let name = match &sound.sound {
+                    (167, None) => "minecraft:block.bell.use",
+                    (168, None) => "minecraft:block.bell.resonate",
+                    (_, Some((name, _)))
+                        if matches!(name.as_str(), "minecraft:block.bell.use" | "minecraft:block.bell.resonate") =>
+                    {
+                        return Ok(Some(play::Clientbound::Sound(sound)));
+                    }
+                    _ => return Ok(None),
+                };
+                sound.sound = (-1, Some((name.into(), None)));
+                play::Clientbound::Sound(sound)
+            }
+            canonical::LEVEL_EVENT => {
+                let play::Clientbound::LevelEvent(mut event) =
+                    play::Clientbound::decode(id, payload)?
+                else {
+                    unreachable!();
+                };
+                // Block break and brush completion effects carry a block state.
+                if matches!(event.kind, 2001 | 3008) {
+                    let Some(state) = blocks.state(event.data) else {
+                        return Ok(None);
+                    };
+                    event.data = state;
+                }
+                play::Clientbound::LevelEvent(event)
+            }
             canonical::PLAYER_POSITION
             | canonical::OPEN_SCREEN
             | canonical::MOUNT_SCREEN_OPEN
@@ -349,7 +386,6 @@ impl Wire {
             | canonical::BLOCK_CHANGED_ACK
             | canonical::BLOCK_DESTRUCTION
             | canonical::BLOCK_EVENT
-            | canonical::LEVEL_EVENT
             | canonical::INITIALIZE_BORDER
             | canonical::SET_BORDER_CENTER
             | canonical::SET_BORDER_LERP_SIZE
@@ -1723,6 +1759,62 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radio_pick_requests_and_bell_sound_use_12111_wire_ids() {
+        use horizon_protocol::buf::{Codec, Pos, Writer};
+
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut server = Connection::from_stream(peer).unwrap();
+        let (_, mut writer) = Connection::from_stream(stream).unwrap().split();
+        let pos = [-25, 64, 110];
+        wire.send_play(
+            &mut writer,
+            play::Serverbound::PickItemFromBlock(play::PickItemFromBlock {
+                pos,
+                include_data: true,
+            }),
+            false,
+        )
+        .unwrap();
+        let mut expected = Writer::new();
+        Pos::write(&pos, &mut expected);
+        expected.bool(true);
+        assert_eq!(server.recv().unwrap(), (0x23, expected.data));
+        wire.send_play(
+            &mut writer,
+            play::Serverbound::PickItemFromEntity(play::PickItemFromEntity {
+                id: 12,
+                include_data: false,
+            }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(server.recv().unwrap(), (0x24, vec![12, 0]));
+
+        let id = wire.version().clientbound_id(State::Play, 0x73).unwrap();
+        for (registered, name) in [(167, "use"), (168, "resonate")] {
+            let mut body = Writer::new();
+            body.varint(registered + 1);
+            body.varint(4);
+            for position in [-200, 512, 880] {
+                body.i32(position);
+            }
+            body.f32(2.0);
+            body.f32(0.75);
+            body.i64(42);
+            let Some(play::Clientbound::Sound(sound)) = wire.decode_play(id, &body.data).unwrap()
+            else {
+                panic!("expected a bell sound");
+            };
+            assert_eq!(sound.sound, (-1, Some((format!("minecraft:block.bell.{name}"), None))));
+            assert_eq!((sound.x, sound.y, sound.z), (-200, 512, 880));
+        }
+    }
 
     #[test]
     fn radio_forwards_lead_attachment_removal_and_block_effects() {
