@@ -1231,6 +1231,12 @@ impl Audio {
             use cpal::traits::StreamTrait;
             if let Err(e) = stream.play() {
                 log::warn!("Horizon: resuming the sound output: {e}");
+                // Android can invalidate the AAudio stream while the app
+                // is away. Keep the mixer and replace its stale output.
+                #[cfg(target_os = "android")]
+                if let Err(error) = self.set_device(&self.device_name.clone()) {
+                    log::warn!("Horizon: reopening the Android sound output: {error}");
+                }
             }
         }
     }

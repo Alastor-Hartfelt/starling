@@ -1470,20 +1470,30 @@ impl Game<'_> {
                     return;
                 }
             }
-            r.session.send(packet);
+            self.send_remote_packet(r, packet);
         }
     }
     /// The hits and uses held back while the stick steered (`send`), the tick after.
     fn send_held_back(&self) {
         if let Some(r) = &self.remote {
             for packet in r.held_back.take() {
-                r.session.send(packet);
+                self.send_remote_packet(r, packet);
             }
         }
     }
-    /// The stick's mode on the server this tick, when on one.
     pub(super) fn remote_stick_mode(&self) -> Option<ServerStick> {
         self.remote.as_ref().map(|r| r.stick_mode)
+    }
+    fn send_remote_packet(&self, remote: &Remote, packet: S) {
+        match packet {
+            S::Interact(interact)
+                if remote.session.is_radio_12111()
+                    && self.armor_stands.iter().any(|stand| stand.id as i32 == interact.id) =>
+            {
+                remote.session.send_interact_at(interact);
+            }
+            packet => remote.session.send(packet),
+        }
     }
     /// The stick's mode on this connection: Analog in single player and for a LAN host.
     fn update_stick_mode(&mut self) -> ServerStick {
@@ -4485,9 +4495,18 @@ impl Game<'_> {
                 if p.event == 0 {
                     self.remote_arrow_puff(p.id as u32);
                 }
-                // LivingEntity.handleEntityEvent 2: a spear's hit felt.
+                // Some translated servers send the old hurt status instead
+                // of DamageEvent. Apply it only when a hurt flash hasn't
+                // already started, and retain the spear hit feedback.
                 if p.event == 2 {
                     self.remote_kinetic_hit(p.id);
+                    if self.remote.as_ref().is_some_and(|r| r.session.is_radio_12111())
+                        && let Some(mob) = self.mob_index.get_mut(&mut self.mobs, p.id as u32)
+                        && mob.hurt_time == 0
+                    {
+                        mob.limb_speed = 1.5;
+                        mob.hurt_time = 10;
+                    }
                 }
                 // LocalPlayer.setPermissions also refreshes an open World Options screen.
                 if (24..=28).contains(&p.event)
@@ -8357,6 +8376,20 @@ impl Game<'_> {
     /// firework rocket wherever it may be used, and the server launches it.
     /// Whether the item's use succeeded, which ends the click.
     fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit, hand: Hand) -> bool {
+        if matches!(&*stack.item, "minecraft:flint_and_steel" | "minecraft:fire_charge") {
+            if !self.may_build()
+                && !self.with_hand(hand, |g| g.can_place_on_in_adventure(hit.pos))
+            {
+                return false;
+            }
+            let [x, y, z] = hit.pos;
+            let [dx, dy, dz] = hit.face;
+            let state = self.world.block(x, y, z);
+            let name = self.block_name(hit.pos);
+            return &*name == "minecraft:tnt"
+                || self.can_light(state, &name)
+                || self.can_place_used_fire([x + dx, y + dy, z + dz]);
+        }
         // FireworkRocketItem.useOn: SUCCESS on the client too, so neither
         // UseItem nor the off hand follows. It passes while gliding (the use
         // boosts instead), cooling down (MultiPlayerGameMode.performUseItemOn
@@ -9081,6 +9114,13 @@ impl Game<'_> {
             return;
         };
         let stack = self.stack_in(slot).cloned();
+        // The server's slot update ends the charge, even if the button is held.
+        if stack.as_ref().is_some_and(|s| {
+            &*s.item == "minecraft:crossbow" && s.data().is_some_and(|d| !d.charged.is_empty())
+        }) {
+            self.using = None;
+            return;
+        }
         // The use stops when the hand no longer holds the item it began with
         // (ItemStack.isSameItem).
         let item = stack.as_ref().map(|s| Arc::clone(&s.item));

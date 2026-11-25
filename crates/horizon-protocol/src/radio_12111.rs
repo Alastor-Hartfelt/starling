@@ -4,9 +4,11 @@ mod block_state_ranges;
 mod entity_types;
 mod item_types;
 
+const LEGACY_MAP_COLOR: i32 = 43;
+
 use crate::{
     Result,
-    buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Reader, UByte, VarInt, Vec3d, Writer},
+    buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Pos, Reader, UByte, VarInt, Vec3d, Writer},
     chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy},
     entity_data::{self, Value, serializer},
     ids,
@@ -482,6 +484,54 @@ pub fn encode_teleport_ack(id: i32) -> Vec<u8> {
     writer.data
 }
 
+/// 1.21.11 sends the action and, for an armor stand, the hit offset as floats.
+pub fn encode_interact(interact: &play::Interact, at_location: bool) -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.varint(ids::play::serverbound::INTERACT);
+    writer.varint(interact.id);
+    writer.varint(if at_location { 2 } else { 0 });
+    if at_location {
+        for coordinate in interact.location {
+            writer.f32(coordinate as f32);
+        }
+    }
+    writer.varint(interact.hand);
+    writer.bool(interact.secondary);
+    writer.data
+}
+
+/// 1.21.11 sends a boolean before the four lines. The engine puts the side last.
+pub fn encode_sign_update(update: &play::SignUpdate) -> Vec<u8> {
+    let mut writer = Writer::new();
+    writer.varint(ids::play::serverbound::SIGN_UPDATE);
+    Pos::write(&update.pos, &mut writer);
+    writer.bool(update.front);
+    play::SignLines::write(&update.lines, &mut writer);
+    writer.data
+}
+
+/// 1.21.11 puts arm swings in Animate and leaves action 1 unused.
+pub fn decode_animation(payload: &[u8]) -> Result<Option<play::Clientbound>> {
+    let animation = play::Animate::read(&mut Reader::new(payload))?;
+    Ok(match animation.action {
+        action @ (0 | 3) => Some(play::Clientbound::SwingAnimation(play::SwingAnimation {
+            id: animation.id,
+            hand: i32::from(action == 3),
+            kind: 1, // whack
+            duration: 6,
+        })),
+        2 | 4 | 5 => Some(play::Clientbound::Animate(play::Animate {
+            id: animation.id,
+            action: match animation.action {
+                2 => 0, // leave bed
+                4 => 1, // critical hit
+                _ => 2, // enchanted hit
+            },
+        })),
+        _ => None,
+    })
+}
+
 /// Components inside Rust stacks use the protocol crate's canonical ordinals.
 /// Keep the loaded registry's names paired with those ordinals for NBT and click hashes.
 pub fn canonicalize_component_registry(builtin: &mut crate::registry::Builtin) {
@@ -537,7 +587,14 @@ fn read_nested_item_slot(
     let added = reader.count(104)?;
     let removed = reader.count(104)?;
     for _ in 0..added {
-        let kind = item_registry_id(reader.varint()?, &item_types::COMPONENTS)?;
+        let source_kind = reader.varint()?;
+        // The engine has no map_color component. Read past its RGB tint
+        // so a tinted map keeps its ID and the rest of the inventory decodes.
+        if source_kind == LEGACY_MAP_COLOR {
+            reader.i32()?;
+            continue;
+        }
+        let kind = item_registry_id(source_kind, &item_types::COMPONENTS)?;
         let mut value = match kind {
             component::TRIM => {
                 let material = reader.varint()?;
@@ -600,7 +657,10 @@ fn read_nested_item_slot(
             | component::CUSTOM_MODEL_DATA
             | component::DYED_COLOR
             | component::POTION_CONTENTS
+            | component::INTANGIBLE_PROJECTILE
             | component::MAP_ID
+            | component::MAP_DECORATIONS
+            | component::MAP_POST_PROCESSING
             | component::OMINOUS_BOTTLE_AMPLIFIER
             | component::TOOLTIP_DISPLAY
             | component::TOOLTIP_STYLE
@@ -642,9 +702,12 @@ fn read_nested_item_slot(
         stack.added.push((kind, value));
     }
     for _ in 0..removed {
-        stack
-            .removed
-            .push(item_registry_id(reader.varint()?, &item_types::COMPONENTS)?);
+        let source_kind = reader.varint()?;
+        if source_kind != LEGACY_MAP_COLOR {
+            stack
+                .removed
+                .push(item_registry_id(source_kind, &item_types::COMPONENTS)?);
+        }
     }
     Ok(Some(stack))
 }
@@ -723,7 +786,17 @@ pub fn decode_entity_data(payload: &[u8], target: BlockStateTarget) -> Result<pl
                 Ok(item) => Value::Item(item),
                 Err(_) => break,
             },
-            serializer::BYTE..=serializer::DIRECTION | serializer::OPTIONAL_UNSIGNED_INT => {
+            serializer::PARTICLES => {
+                // An empty list clears potion particles and has no
+                // version-specific particle IDs or payloads to translate.
+                if r.varint()? != 0 {
+                    break;
+                }
+                Value::Particles(Vec::new())
+            }
+            serializer::BYTE..=serializer::DIRECTION
+            | serializer::OPTIONAL_UNSIGNED_INT
+            | serializer::POSE => {
                 let Some(value) = entity_data::read_value(kind, &mut r)? else {
                     break;
                 };
@@ -873,6 +946,56 @@ pub fn remap_player_action(mut action: play::PlayerAction) -> Option<play::Playe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interaction_and_sign_actions_match_the_12111_wire_layout() {
+        let interact = play::Interact {
+            id: 5,
+            hand: 1,
+            location: [0.25, 1.0, -0.5],
+            secondary: true,
+        };
+        let packet = encode_interact(&interact, false);
+        assert_eq!(packet, [26, 5, 0, 1, 1]);
+        let packet = encode_interact(&interact, true);
+        assert_eq!(packet, [26, 5, 2, 62, 128, 0, 0, 63, 128, 0, 0, 191, 0, 0, 0, 1, 1]);
+
+        let update = play::SignUpdate {
+            pos: [0; 3],
+            lines: ["a".into(), "b".into(), "".into(), "d".into()],
+            front: true,
+        };
+        let packet = encode_sign_update(&update);
+        assert_eq!(&packet[..10], &[62, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(&packet[10..], b"\x01a\x01b\x00\x01d");
+    }
+
+    #[test]
+    fn map_tint_and_intangible_ammo_keep_the_rest_of_the_stack() {
+        let mut w = Writer::new();
+        // The unmapped tint precedes the map id and decorations.
+        w.bytes(&[1, 1, 3, 0, 43]);
+        w.i32(0x123456);
+        w.bytes(&[44, 19, 45, 10, 0]);
+        let mut reader = Reader::new(&w.data);
+        let stack = read_item_slot(&mut reader, BlockStateTarget::Native12111)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reader.remaining(), 0);
+        assert_eq!(stack.added[0], (component::MAP_ID, Component::Int(19)));
+
+        // A charged crossbow contains an arrow with the NBT-backed unit marker.
+        let data = [1, 1, 1, 0, 47, 1, 1, 1, 1, 0, 22, 10, 0];
+        let mut reader = Reader::new(&data);
+        let stack = read_item_slot(&mut reader, BlockStateTarget::Native12111)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reader.remaining(), 0);
+        assert!(matches!(
+            &stack.added[..],
+            [(component::CHARGED_PROJECTILES, Component::Stacks(ammo))] if ammo.len() == 1
+        ));
+    }
 
     #[test]
     fn container_click_translates_predicted_stack_ids_back_to_12111() {

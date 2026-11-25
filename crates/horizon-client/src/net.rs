@@ -165,6 +165,14 @@ impl Wire {
                     body.bool(sneaking);
                     return self.send(writer, State::Play, &body.data);
                 }
+                play::Serverbound::Interact(interact) => {
+                    let body = radio_12111::encode_interact(&interact, false);
+                    return self.send(writer, State::Play, &body);
+                }
+                play::Serverbound::SignUpdate(update) => {
+                    let body = radio_12111::encode_sign_update(&update);
+                    return self.send(writer, State::Play, &body);
+                }
                 play::Serverbound::PlayerAction(action) => {
                     if let Some(action) = radio_12111::remap_player_action(action) {
                         let body = play::Serverbound::PlayerAction(action).encode();
@@ -188,10 +196,14 @@ impl Wire {
                 | play::Serverbound::ChunkBatchReceived(_)
                 | play::Serverbound::PlayerLoaded(_)
                 | play::Serverbound::ClientInformation(_)
+                | play::Serverbound::EditBook(_)
+                | play::Serverbound::ContainerButtonClick(_)
                 | play::Serverbound::MovePlayerPos(_)
                 | play::Serverbound::MovePlayerPosRot(_)
                 | play::Serverbound::MovePlayerRot(_)
                 | play::Serverbound::MovePlayerStatus(_)
+                | play::Serverbound::MoveVehicle(_)
+                | play::Serverbound::PaddleBoat(_)
                 | play::Serverbound::PlayerInput(_)
                 | play::Serverbound::PlayerCommand(_)
                 | play::Serverbound::PlayerAbilities(_)
@@ -314,8 +326,13 @@ impl Wire {
             canonical::SET_ENTITY_DATA => {
                 play::Clientbound::SetEntityData(radio_12111::decode_entity_data(payload, blocks)?)
             }
+            canonical::ANIMATE => return radio_12111::decode_animation(payload),
             canonical::PLAYER_POSITION
             | canonical::OPEN_SCREEN
+            | canonical::OPEN_BOOK
+            | canonical::OPEN_SIGN_EDITOR
+            | canonical::MAP_ITEM_DATA
+            | canonical::MOVE_VEHICLE
             | canonical::CONTAINER_CLOSE
             | canonical::CONTAINER_SET_DATA
             | canonical::SET_HELD_SLOT
@@ -354,7 +371,6 @@ impl Wire {
             | canonical::CLEAR_TITLES
             | canonical::CHANGE_DIFFICULTY
             | canonical::COOLDOWN
-            | canonical::ANIMATE
             | canonical::SET_PASSENGERS
             | canonical::TAKE_ITEM_ENTITY
             | canonical::DAMAGE_EVENT
@@ -662,6 +678,15 @@ impl Session {
     /// acknowledgement; one that did would reach the server as a
     /// configuration packet, and Velocity drops such a client.
     pub fn send(&self, packet: play::Serverbound) {
+        self.send_packet(packet, false);
+    }
+
+    /// Armor stands use the position-aware action on 1.21.11.
+    pub fn send_interact_at(&self, interact: play::Interact) {
+        self.send_packet(play::Serverbound::Interact(interact), true);
+    }
+
+    fn send_packet(&self, packet: play::Serverbound, interact_at: bool) {
         if self.debug
             && !matches!(
                 packet,
@@ -681,10 +706,20 @@ impl Session {
         {
             self.sneaking.store(input.flags & 0x20 != 0, Ordering::Relaxed);
         }
-        if let Some(w) = writer.as_mut()
-            && self.wire.send_play(w, packet, self.sneaking.load(Ordering::Relaxed)).is_err()
-        {
-            w.shutdown();
+        if let Some(w) = writer.as_mut() {
+            let result = if interact_at
+                && matches!(self.wire, Wire::Radio12111(_))
+                && let play::Serverbound::Interact(interact) = &packet
+            {
+                let body = radio_12111::encode_interact(interact, true);
+                self.wire.send(w, State::Play, &body)
+            } else {
+                self.wire
+                    .send_play(w, packet, self.sneaking.load(Ordering::Relaxed))
+            };
+            if result.is_err() {
+                w.shutdown();
+            }
         }
     }
     /// Far terrain the server samples, as it offered (`Event::FarTerrain`):
@@ -1668,6 +1703,52 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radio_map_sign_book_and_swing_packets_reach_the_game() {
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let decode = |id, payload: &[u8]| {
+            wire.decode_play(wire.version().clientbound_id(State::Play, id).unwrap(), payload)
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(
+            decode(0x31, &[7, 0, 1, 0, 2, 1, 3, 4, 2, 12, 34]),
+            play::Clientbound::MapItemData(play::MapItemData {
+                map_id: 7,
+                scale: 0,
+                locked: true,
+                decorations: None,
+                patch: Some(play::MapPatch {
+                    start_x: 3,
+                    start_y: 4,
+                    width: 2,
+                    height: 1,
+                    colors: vec![12, 34],
+                }),
+            })
+        );
+        assert_eq!(
+            decode(0x38, &[1]),
+            play::Clientbound::OpenBook(play::OpenBook { hand: 1 })
+        );
+        assert_eq!(
+            decode(0x3a, &[0, 0, 0, 0, 0, 0, 0, 0, 1]),
+            play::Clientbound::OpenSignEditor(play::OpenSignEditor {
+                pos: [0; 3],
+                front: true,
+            })
+        );
+        assert_eq!(
+            decode(0x02, &[7, 0]),
+            play::Clientbound::SwingAnimation(play::SwingAnimation {
+                id: 7,
+                hand: 0,
+                kind: 1,
+                duration: 6,
+            })
+        );
+    }
 
     #[test]
     fn radio_block_events_preserve_container_lid_actions() {
