@@ -336,25 +336,8 @@ impl Wire {
             canonical::RECIPE_BOOK_ADD | canonical::PLACE_GHOST_RECIPE => {
                 radio_12111::decode_recipe_book(id, payload, blocks)?
             }
-            canonical::SOUND => {
-                let play::Clientbound::Sound(mut sound) = play::Clientbound::decode(id, payload)?
-                else {
-                    unreachable!();
-                };
-                // Use the legacy registry names for bells. Other numeric
-                // sound IDs need their own registry mapping before playback.
-                let name = match &sound.sound {
-                    (167, None) => "minecraft:block.bell.use",
-                    (168, None) => "minecraft:block.bell.resonate",
-                    (_, Some((name, _)))
-                        if matches!(name.as_str(), "minecraft:block.bell.use" | "minecraft:block.bell.resonate") =>
-                    {
-                        return Ok(Some(play::Clientbound::Sound(sound)));
-                    }
-                    _ => return Ok(None),
-                };
-                sound.sound = (-1, Some((name.into(), None)));
-                play::Clientbound::Sound(sound)
+            canonical::EXPLODE => {
+                play::Clientbound::Explode(radio_12111::decode_explosion(payload, blocks)?)
             }
             canonical::LEVEL_EVENT => {
                 let play::Clientbound::LevelEvent(mut event) =
@@ -428,6 +411,9 @@ impl Wire {
             | canonical::COOLDOWN
             | canonical::SET_PASSENGERS
             | canonical::SET_ENTITY_LINK
+            | canonical::SOUND
+            | canonical::SOUND_ENTITY
+            | canonical::STOP_SOUND
             | canonical::TAKE_ITEM_ENTITY
             | canonical::DAMAGE_EVENT
             | canonical::HURT_ANIMATION
@@ -1812,7 +1798,11 @@ mod tests {
             else {
                 panic!("expected a bell sound");
             };
-            assert_eq!(sound.sound, (-1, Some((format!("minecraft:block.bell.{name}"), None))));
+            assert_eq!(sound.sound, (registered, None));
+            assert_eq!(
+                radio_12111::sound_name(sound.sound.0),
+                Some(format!("minecraft:block.bell.{name}").as_str())
+            );
             assert_eq!((sound.x, sound.y, sound.z), (-200, 512, 880));
         }
     }

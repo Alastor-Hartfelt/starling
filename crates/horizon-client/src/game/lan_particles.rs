@@ -460,7 +460,13 @@ impl Game<'_> {
                 .unwrap_or_else(|| "minecraft:entity.generic.explode".to_owned());
             self.audio.play(&sound, Some(p.center), 4.0, pitch);
         }
-        if let Some(options) = self.received_particle(&p.particle, p.center) {
+        let mut particle = p.particle.clone();
+        if let Some(remote) = self.remote.as_ref().filter(|r| r.session.is_radio_12111()) {
+            particle.id = horizon_protocol::radio_12111::particle_name(particle.id)
+                .and_then(|name| remote.builtin.get("minecraft:particle_type")?.id(name))
+                .unwrap_or(-1);
+        }
+        if let Some(options) = self.received_particle(&particle, p.center) {
             self.particles.add(&options, p.center, [1.0, 0.0, 0.0]);
         }
         // A wind charge's burst throws none.

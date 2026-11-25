@@ -72,6 +72,7 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
     let mut recipes_seen = false;
     let mut player_id = None;
     let mut soul_speed = [false; 2];
+    let mut explosion_seen = false;
     while Instant::now() < deadline {
         for event in session.poll() {
             let packet = match event {
@@ -205,6 +206,13 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
                 }
                 C::KeepAlive(_) => keepalives += 1,
                 C::Ping(p) => session.send(S::Pong(p)),
+                C::Explode(p) if !explosion_seen && p.play_sound
+                    && horizon_protocol::radio_12111::sound_name(p.sound.0)
+                        == Some("minecraft:entity.generic.explode") =>
+                {
+                    explosion_seen = true;
+                    println!("vanilla explosion sound verified");
+                }
                 C::UpdateAttributes(p) if Some(p.id) == player_id && soul_speed != [true; 2] => {
                     for value in p.values {
                         let Some((index, amount)) = (match horizon_protocol::radio_12111::attribute_name(value.attribute) {
@@ -250,7 +258,7 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
         if level.as_ref().is_some_and(|level| level.ready)
             && (!require_nether || nether_ready)
             && (peer.is_none() || (peer_listed && (require_nether || peer_removed)))
-            && (peer.is_none() || (armor_seen == [true; 2] && recipes_seen && soul_speed == [true; 2]))
+            && (peer.is_none() || (armor_seen == [true; 2] && recipes_seen && soul_speed == [true; 2] && explosion_seen))
             && keepalives >= 2
         {
             println!(

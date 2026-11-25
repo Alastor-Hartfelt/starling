@@ -182,6 +182,10 @@ pub enum PositionSource {
 impl Particle {
     pub fn read(r: &mut Reader) -> Result<Particle> {
         let id = r.varint()?;
+        Self::read_with_id(r, id)
+    }
+
+    pub(crate) fn read_with_id(r: &mut Reader, id: i32) -> Result<Particle> {
         // A native mod's type: the namespaced name follows the sentinel id.
         if id == MOD_PARTICLE_ID {
             return Ok(Particle {

@@ -897,6 +897,9 @@ impl Game<'_> {
         match &sound.1 {
             Some((location, _)) => Some(location.clone()),
             None => self.remote.as_ref().and_then(|r| {
+                if r.session.is_radio_12111() {
+                    return horizon_protocol::radio_12111::sound_name(sound.0).map(str::to_owned);
+                }
                 r.builtin
                     .get("minecraft:sound_event")?
                     .name(sound.0)

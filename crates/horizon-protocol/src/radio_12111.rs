@@ -13,12 +13,89 @@ use crate::{
     Result,
     buf::{Bool, Byte, Codec, Ident, Int, List, Long, Opt, Pos, Reader, UByte, VarInt, Vec3d, Writer},
     chunk::{BLOCKS, ChunkData, Layers, LightData, Paletted, Strategy},
-    entity_data::{self, Value, serializer},
+    entity_data::{self, Particle, ParticleData, Value, serializer},
     ids,
     item::{Component, Hashed, Stack, Template, component},
     packet,
     packets::{handshake, login, play},
 };
+
+/// Sound events and particle types in vanilla 1.21.11 registry order.
+const SOUND_EVENTS: &str = include_str!("radio_12111/sound_events.txt");
+const PARTICLE_TYPES: &str = include_str!("radio_12111/particle_types.txt");
+
+pub fn sound_name(id: i32) -> Option<&'static str> {
+    static NAMES: std::sync::LazyLock<Vec<&str>> =
+        std::sync::LazyLock::new(|| SOUND_EVENTS.lines().collect());
+    NAMES.get(usize::try_from(id).ok()?).copied()
+}
+
+pub fn particle_name(id: i32) -> Option<&'static str> {
+    PARTICLE_TYPES.lines().nth(usize::try_from(id).ok()?)
+}
+
+fn explosion_particle(r: &mut Reader, target: BlockStateTarget) -> Result<Particle> {
+    let id = r.varint()?;
+    let name = particle_name(id).ok_or_else(|| crate::Error::new("unknown 1.21.11 particle"))?;
+    // Reuse the shared codecs where the payload is unchanged. Return the
+    // source particle ID so the client can resolve it by name.
+    let codec = match name {
+        "minecraft:block" | "minecraft:block_marker" | "minecraft:falling_dust"
+        | "minecraft:dust_pillar" | "minecraft:block_crumble" => 1,
+        "minecraft:entity_effect" | "minecraft:tinted_leaves" | "minecraft:flash" => 28,
+        "minecraft:dust" => 21,
+        "minecraft:dust_color_transition" => 22,
+        "minecraft:effect" | "minecraft:instant_effect" => 23,
+        "minecraft:dragon_breath" | "minecraft:sculk_charge" => 15,
+        "minecraft:shriek" => 115,
+        "minecraft:trail" => 59,
+        "minecraft:vibration" => 58,
+        "minecraft:item" => {
+            let data = read_item_slot(r, target)?.map(ParticleData::Item);
+            return Ok(Particle { id, data });
+        }
+        _ => 0, // Only the types above carry a payload in 1.21.11.
+    };
+    let mut particle = Particle::read_with_id(r, codec)?;
+    particle.id = id;
+    if let Some(ParticleData::State(state)) = &mut particle.data {
+        *state = target.state(*state).ok_or_else(|| crate::Error::new("unknown 1.21.11 particle block state"))?;
+    }
+    Ok(particle)
+}
+
+/// 1.21.11 always plays the explosion sound. It has no trailing play flag.
+pub fn decode_explosion(payload: &[u8], target: BlockStateTarget) -> Result<play::Explode> {
+    let mut r = Reader::new(payload);
+    let center = Vec3d::read(&mut r)?;
+    let radius = r.f32()?;
+    let block_count = r.i32()?;
+    let knockback = Opt::<Vec3d>::read(&mut r)?;
+    let particle = explosion_particle(&mut r, target)?;
+    let sound = play::SoundHolder::read(&mut r)?;
+    let count = r.count(r.remaining() / 10)?;
+    let block_particles = (0..count)
+        .map(|_| Ok(play::ExplosionParticle {
+            particle: explosion_particle(&mut r, target)?,
+            scaling: r.f32()?,
+            speed: r.f32()?,
+            weight: r.varint()?,
+        }))
+        .collect::<Result<_>>()?;
+    if r.remaining() != 0 {
+        return Err(crate::Error::new("trailing bytes in 1.21.11 explosion"));
+    }
+    Ok(play::Explode {
+        center,
+        radius,
+        block_count,
+        knockback,
+        particle,
+        sound,
+        block_particles,
+        play_sound: true,
+    })
+}
 
 /// Names in the 1.21.11 attribute registry's wire order.
 pub fn attribute_name(id: i32) -> Option<&'static str> {
