@@ -1694,7 +1694,7 @@ impl Game<'_> {
     fn next_sequence(&mut self) -> i32 {
         self.remote.as_mut().expect("remote").predictions.start()
     }
-    fn item_name(&self, id: i32) -> Arc<str> {
+    pub(super) fn item_name(&self, id: i32) -> Arc<str> {
         let r = self.remote.as_ref().expect("remote");
         Arc::from(
             r.builtin

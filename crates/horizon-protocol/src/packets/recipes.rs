@@ -206,11 +206,14 @@ impl SlotDisplay {
     }
 }
 
-fn read_list(r: &mut Reader) -> Result<Vec<SlotDisplay>> {
+fn read_list(
+    r: &mut Reader,
+    slot: &impl Fn(&mut Reader) -> Result<SlotDisplay>,
+) -> Result<Vec<SlotDisplay>> {
     let n = r.count(r.remaining())?;
     let mut out = Vec::with_capacity(n.min(256));
     for _ in 0..n {
-        out.push(SlotDisplay::read(r)?);
+        out.push(slot(r)?);
     }
     Ok(out)
 }
@@ -265,19 +268,20 @@ impl RecipeDisplay {
             | Self::Smithing { result, .. } => result,
         }
     }
-}
-impl Codec<RecipeDisplay> for RecipeDisplay {
-    fn read(r: &mut Reader) -> Result<Self> {
-        let slot = SlotDisplay::read;
+
+    pub(crate) fn read_with(
+        r: &mut Reader,
+        slot: &impl Fn(&mut Reader) -> Result<SlotDisplay>,
+    ) -> Result<Self> {
         Ok(match r.varint()? {
             0 => Self::Shapeless {
-                ingredients: read_list(r)?,
+                ingredients: read_list(r, slot)?,
                 result: slot(r)?,
                 station: slot(r)?,
             },
             1 => {
                 let (width, height) = (r.varint()?, r.varint()?);
-                let ingredients = read_list(r)?;
+                let ingredients = read_list(r, slot)?;
                 if i64::from(width) * i64::from(height) != ingredients.len() as i64 {
                     return Err(crate::Error::new("shaped display size mismatch"));
                 }
@@ -311,6 +315,11 @@ impl Codec<RecipeDisplay> for RecipeDisplay {
             },
             id => return Err(crate::Error::new(format!("unknown recipe display {id}"))),
         })
+    }
+}
+impl Codec<RecipeDisplay> for RecipeDisplay {
+    fn read(r: &mut Reader) -> Result<Self> {
+        Self::read_with(r, &SlotDisplay::read)
     }
     fn write(v: &Self, w: &mut Writer) {
         match v {
@@ -406,8 +415,14 @@ pub struct RecipeBookAdd {
 }
 impl RecipeBookEntry {
     pub fn read(r: &mut Reader) -> Result<Self> {
+        Self::read_with(r, &SlotDisplay::read)
+    }
+    pub(crate) fn read_with(
+        r: &mut Reader,
+        slot: &impl Fn(&mut Reader) -> Result<SlotDisplay>,
+    ) -> Result<Self> {
         let id = r.varint()?;
-        let display = RecipeDisplay::read(r)?;
+        let display = RecipeDisplay::read_with(r, slot)?;
         let group = r.varint()?;
         let category = r.varint()?;
         let requirements = if r.bool()? {

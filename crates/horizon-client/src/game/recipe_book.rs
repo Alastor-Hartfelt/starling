@@ -7,10 +7,11 @@
 use super::{Game, Screen};
 use horizon_client::{
     containers::{BlockEntity, FurnaceKind},
+    crafting::{Ingredient, Placement},
     hud::{HudBatch, Rect, rgba},
     items::ItemStack,
     menu::place::{PostPlace, Stacked},
-    recipe_book::{Book, BookType, ClientBook, Collection, Entry, GhostTarget, Tab},
+    recipe_book::{Book, BookType, Category, ClientBook, Collection, Display, Entry, GhostTarget, Tab},
     recipe_book_screen::{
         self as screen, ButtonView, Call, Drawn, GhostView, ItemCall, OverlayRecipe, OverlayView,
         Screen as Layout, Search, TabView,
@@ -18,8 +19,9 @@ use horizon_client::{
     text::{Style, Text},
     ui::EditBox,
 };
+use horizon_protocol::packets::recipes::{HolderSet, RecipeBookEntry, RecipeDisplay, SlotDisplay};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     hash::{Hash, Hasher},
 };
 
@@ -82,6 +84,7 @@ pub(super) struct RecipeUi {
     /// The client's copy of the known recipes (`ClientRecipeBook`), its
     /// order deciding the buttons', and the recipes it was last synced with.
     client: ClientBook,
+    server_entries: BTreeMap<i32, RecipeBookEntry>,
     client_known: Option<BTreeSet<String>>,
     client_version: u64,
     /// The display a click last placed (`lastRecipe`), which Enter and Space
@@ -90,6 +93,14 @@ pub(super) struct RecipeUi {
 }
 
 impl RecipeUi {
+    pub(super) fn reset_server_book(&mut self) {
+        self.server_entries.clear();
+        self.client.clear();
+        self.client_known = None;
+        self.client_version += 1;
+        self.reset_screen();
+    }
+
     /// A new screen starts without a ghost recipe, overlay or search focus.
     pub(super) fn reset_screen(&mut self) {
         self.ghost.clear();
@@ -385,8 +396,22 @@ impl Game<'_> {
     }
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {
-            let mut book = Book::build(self.recipes(), self.items());
-            book.set_display_ids(&self.stations().recipe_index);
+            let book = if self.uses_radio_recipe_book() {
+                let mut book = Book::default();
+                for packet in self.recipe_ui.server_entries.values() {
+                    if let Some((entry, placement)) = self.radio_recipe_entry(packet) {
+                        if let Some(placement) = placement {
+                            book.placements.insert(entry.id.clone(), placement);
+                        }
+                        book.entries.push(entry);
+                    }
+                }
+                book
+            } else {
+                let mut book = Book::build(self.recipes(), self.items());
+                book.set_display_ids(&self.stations().recipe_index);
+                book
+            };
             self.recipe_ui.book = Some(book);
         }
         if self.recipe_ui.search.is_none() {
@@ -1057,6 +1082,113 @@ impl Game<'_> {
 
     // ---- a server's recipe book ----
 
+    fn uses_radio_recipe_book(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| r.session.is_radio_12111())
+    }
+
+    fn radio_recipe_items(&self, set: &HolderSet) -> Vec<String> {
+        match set {
+            HolderSet::Tag(tag) => self.items().item_tag_order.get(tag).cloned().unwrap_or_default(),
+            HolderSet::Items(ids) => ids.iter().map(|id| self.item_name(*id))
+                .filter(|name| &**name != "minecraft:air")
+                .map(|name| name.to_string())
+                .collect(),
+        }
+    }
+
+    fn radio_recipe_stacks(&self, slot: &SlotDisplay, out: &mut Vec<ItemStack>) {
+        match slot {
+            SlotDisplay::Item(id) => {
+                let name = self.item_name(*id);
+                if &*name != "minecraft:air" {
+                    out.push(ItemStack::new(&name, 1));
+                }
+            }
+            SlotDisplay::ItemStack(stack) => {
+                if let Some(stack) = self.to_stack(&Some(stack.clone())) {
+                    out.push(stack);
+                }
+            }
+            SlotDisplay::Tag(set) => out.extend(
+                self.radio_recipe_items(set).iter().map(|name| ItemStack::new(name, 1)),
+            ),
+            SlotDisplay::Composite(slots) => {
+                for slot in slots {
+                    self.radio_recipe_stacks(slot, out);
+                }
+            }
+            SlotDisplay::WithRemainder { input, .. } => self.radio_recipe_stacks(input, out),
+            _ => {}
+        }
+    }
+
+    fn radio_recipe_entry(&self, packet: &RecipeBookEntry) -> Option<(Entry, Option<Placement>)> {
+        use Category::*;
+        let category = match packet.category {
+            0 => CraftingBuilding,
+            1 => CraftingRedstone,
+            2 => CraftingEquipment,
+            3 => CraftingMisc,
+            4 => FurnaceFood,
+            5 => FurnaceBlocks,
+            6 => FurnaceMisc,
+            7 => BlastBlocks,
+            8 => BlastMisc,
+            9 => SmokerFood,
+            _ => return None,
+        };
+        let mut stacks = Vec::new();
+        let mut index = 0;
+        let mut ingredient = |slot: &SlotDisplay| {
+            let mut choices = Vec::new();
+            self.radio_recipe_stacks(slot, &mut choices);
+            let items = Ingredient::of(choices.iter().map(|s| s.item.to_string()).collect());
+            if choices.iter().any(|s| s.data().is_some() || s.count != 1) {
+                stacks.push((index, choices));
+            }
+            index += 1;
+            items
+        };
+        let display = match &packet.display {
+            RecipeDisplay::Shaped { width, height, ingredients, .. } => {
+                if !(1..=3).contains(width) || !(1..=3).contains(height) {
+                    return None;
+                }
+                Display::Shaped {
+                    width: *width as usize,
+                    height: *height as usize,
+                    cells: ingredients.iter().map(|slot| {
+                        (!matches!(slot, SlotDisplay::Empty)).then(|| ingredient(slot))
+                    }).collect(),
+                }
+            }
+            RecipeDisplay::Shapeless { ingredients, .. } => {
+                Display::Shapeless(ingredients.iter().map(ingredient).collect())
+            }
+            RecipeDisplay::Furnace { ingredient: input, .. } => Display::Furnace(ingredient(input)),
+            _ => return None,
+        };
+        let mut variants = Vec::new();
+        self.radio_recipe_stacks(packet.display.result(), &mut variants);
+        let result = variants.first()?.clone();
+        let placement = packet.requirements.as_ref().map(|sets| {
+            Placement::of(
+                sets.iter().map(|set| Some(Ingredient::of(self.radio_recipe_items(set)))).collect(),
+                None,
+            )
+        }).filter(|placement| !placement.impossible());
+        Some((Entry {
+            id: format!("radio:recipe/{}", packet.id),
+            display_id: packet.id,
+            category,
+            group: (packet.group != 0).then(|| packet.group.to_string()),
+            display,
+            result,
+            variants,
+            stacks,
+        }, placement))
+    }
+
     /// ClientboundRecipeBookAddPacket (`ClientRecipeBook.add`): the
     /// displays join the book, highlighted when new, and the recipes whose
     /// entries ask for it show the toast.
@@ -1064,9 +1196,11 @@ impl Game<'_> {
         &mut self,
         p: horizon_protocol::packets::recipes::RecipeBookAdd,
     ) {
+        let radio = self.uses_radio_recipe_book();
         let ui = &mut self.recipe_ui;
         if p.replace {
             ui.client.clear();
+            ui.server_entries.clear();
         }
         let mut toast = Vec::new();
         for e in &p.entries {
@@ -1074,7 +1208,7 @@ impl Game<'_> {
             if e.flags & 2 != 0 {
                 ui.client.highlight.insert(e.id);
             }
-            if e.flags & 1 != 0
+            if !radio && e.flags & 1 != 0
                 && let Some(id) = world_stations!(self).recipe_index.recipe_of_display(e.id)
                 && !toast.iter().any(|t| t == id)
             {
@@ -1084,6 +1218,10 @@ impl Game<'_> {
         // A local world opened later syncs its book from scratch.
         ui.client_known = None;
         ui.client_version += 1;
+        if radio {
+            ui.server_entries.extend(p.entries.into_iter().map(|entry| (entry.id, entry)));
+            ui.book = None;
+        }
         self.recipe_toast(&toast);
     }
     /// ClientboundRecipeBookRemovePacket.
@@ -1093,6 +1231,10 @@ impl Game<'_> {
     ) {
         for id in p.ids {
             self.recipe_ui.client.remove(id);
+            self.recipe_ui.server_entries.remove(&id);
+        }
+        if self.uses_radio_recipe_book() {
+            self.recipe_ui.book = None;
         }
         self.recipe_ui.client_version += 1;
     }

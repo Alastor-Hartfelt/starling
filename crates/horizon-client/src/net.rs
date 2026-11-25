@@ -209,6 +209,9 @@ impl Wire {
                 | play::Serverbound::PlayerAbilities(_)
                 | play::Serverbound::SetCarriedItem(_)
                 | play::Serverbound::SetBeacon(_)
+                | play::Serverbound::PlaceRecipe(_)
+                | play::Serverbound::RecipeBookChangeSettings(_)
+                | play::Serverbound::Unknown(ids::play::serverbound::RECIPE_BOOK_SEEN_RECIPE, _)
                 | play::Serverbound::UseItem(_)
                 | play::Serverbound::UseItemOn(_) => {}
                 // Only send the supported subset of protocol 774 play packets.
@@ -328,10 +331,15 @@ impl Wire {
                 play::Clientbound::SetEntityData(radio_12111::decode_entity_data(payload, blocks)?)
             }
             canonical::ANIMATE => return radio_12111::decode_animation(payload),
+            canonical::RECIPE_BOOK_ADD | canonical::PLACE_GHOST_RECIPE => {
+                radio_12111::decode_recipe_book(id, payload, blocks)?
+            }
             canonical::PLAYER_POSITION
             | canonical::OPEN_SCREEN
             | canonical::MOUNT_SCREEN_OPEN
             | canonical::OPEN_BOOK
+            | canonical::RECIPE_BOOK_REMOVE
+            | canonical::RECIPE_BOOK_SETTINGS
             | canonical::OPEN_SIGN_EDITOR
             | canonical::MAP_ITEM_DATA
             | canonical::MOVE_VEHICLE

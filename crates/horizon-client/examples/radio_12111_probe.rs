@@ -69,6 +69,7 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
         None => return Err("missing Radio registry".into()),
     };
     let mut armor_seen = [false; 2];
+    let mut recipes_seen = false;
     while Instant::now() < deadline {
         for event in session.poll() {
             let packet = match event {
@@ -201,6 +202,10 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
                 }
                 C::KeepAlive(_) => keepalives += 1,
                 C::Ping(p) => session.send(S::Pong(p)),
+                C::RecipeBookAdd(p) if !recipes_seen && p.entries.len() > 20 => {
+                    recipes_seen = true;
+                    println!("vanilla recipe displays verified ({})", p.entries.len());
+                }
                 C::AddEntity(p) if p.kind == zombie_kind || p.kind == skeleton_kind => {
                     armor_targets.insert(p.id, usize::from(p.kind == skeleton_kind));
                 }
@@ -223,7 +228,7 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
         if level.as_ref().is_some_and(|level| level.ready)
             && (!require_nether || nether_ready)
             && (peer.is_none() || (peer_listed && (require_nether || peer_removed)))
-            && (peer.is_none() || armor_seen == [true; 2])
+            && (peer.is_none() || (armor_seen == [true; 2] && recipes_seen))
             && keepalives >= 2
         {
             println!(

@@ -3,6 +3,9 @@
 mod block_state_ranges;
 mod entity_types;
 mod item_types;
+mod recipes;
+
+pub use recipes::decode_recipe_book;
 
 const LEGACY_MAP_COLOR: i32 = 43;
 
