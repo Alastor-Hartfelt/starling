@@ -660,6 +660,7 @@ fn read_nested_item_slot(
             | component::CUSTOM_MODEL_DATA
             | component::DYED_COLOR
             | component::POTION_CONTENTS
+            | component::SUSPICIOUS_STEW_EFFECTS
             | component::INTANGIBLE_PROJECTILE
             | component::MAP_ID
             | component::MAP_DECORATIONS
