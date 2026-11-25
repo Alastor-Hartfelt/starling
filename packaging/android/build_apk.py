@@ -207,7 +207,7 @@ def compile_java(build_tools, android_jar, out):
     return dex / "classes.dex"
 
 
-def link_resources(aapt2, android_jar, out, assets, variant, abi=ABI):
+def link_resources(aapt2, android_jar, out, assets, variant, abi=ABI, version_code=VERSION_CODE):
     """The manifest, the launcher icon, the themes and `assets`, compiled and linked into
     `out/base.apk`; `variant` is None (the release's app) or a key of VARIANTS."""
     manifest = (HERE / "AndroidManifest.xml").read_text(encoding="utf-8")
@@ -255,7 +255,7 @@ def link_resources(aapt2, android_jar, out, assets, variant, abi=ABI):
         "--java", out / "generated", "--custom-package", "io.github.juanluci.starling",
         "-I", android_jar,
         "--min-sdk-version", MIN_SDK, "--target-sdk-version", TARGET_SDK,
-        "--version-code", VERSION_CODE, "--version-name", VERSION_NAME,
+        "--version-code", version_code, "--version-name", VERSION_NAME,
         *debug,
         "-A", assets,
         *sorted(compiled.glob("*.flat")),
@@ -322,7 +322,10 @@ def main():
         help=f"Starling Preview ({APPLICATION_ID}{VARIANTS['preview'][0]}), the organisation's CI build",
     )
     parser.add_argument("--abi", choices=TARGETS, default=ABI, help="Android ABI (default: arm64-v8a)")
+    parser.add_argument("--version-code", type=int, default=VERSION_CODE, help="APK version code")
     args = parser.parse_args()
+    if not 1 <= args.version_code <= 2_100_000_000:
+        parser.error("--version-code must be between 1 and 2100000000")
     triple, _, _ = TARGETS[args.abi]
 
     sdk = sdk_dir()
@@ -355,7 +358,9 @@ def main():
         shutil.copyfile(built, out / f"lib{LIBRARY}-symbols.so")
 
     variant = "dev" if args.dev else "preview" if args.preview else None
-    link_resources(tool(build_tools, "aapt2"), android_jar, out, assets(out), variant, args.abi)
+    link_resources(
+        tool(build_tools, "aapt2"), android_jar, out, assets(out), variant, args.abi, args.version_code
+    )
     dex = compile_java(build_tools, android_jar, out)
     libraries = build_launchers(ndk, out, args.abi)
     libraries[library.name] = library

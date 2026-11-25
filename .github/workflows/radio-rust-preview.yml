@@ -57,6 +57,18 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: Load the persistent preview signing key
+        env:
+          KEYSTORE: ${{ secrets.STARLING_DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE" ]; then
+            echo "::error::Configure STARLING_DEBUG_KEYSTORE_BASE64 to publish previews that can update in place."
+            exit 1
+          fi
+          umask 077
+          mkdir -p target/android
+          printf '%s' "$KEYSTORE" | base64 -d > target/android/debug.keystore
+          test -s target/android/debug.keystore
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -71,15 +83,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: radio-engine-preview-arm64
-      - name: Use the repository preview signing key when configured
-        env:
-          KEYSTORE: ${{ secrets.STARLING_DEBUG_KEYSTORE_BASE64 }}
+      - name: Build the update-compatible preview APK
+        # Leave room above older previews, which used the fixed version code 13.
         run: |
-          test -n "$KEYSTORE" || exit 0
-          mkdir -p target/android
-          printf '%s' "$KEYSTORE" | base64 -d > target/android/debug.keystore
-      - name: Build preview APK with a debug key
-        run: python3 packaging/android/build_apk.py --abi arm64-v8a --profile quick --preview
+          python3 packaging/android/build_apk.py --abi arm64-v8a --profile quick --preview \
+            --version-code "$((1000 + GITHUB_RUN_NUMBER))"
       - uses: actions/upload-artifact@v4
         with:
           name: radio-android-arm64-engine-preview
