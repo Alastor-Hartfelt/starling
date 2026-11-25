@@ -6462,12 +6462,13 @@ impl Game<'_> {
             let entity_start = out.len();
             self.mark_motion(entity_start, (1 << 32) | u64::from(mob.id));
             let outline = self.mob_outline(mob);
-            // Entity.DATA_SHARED_FLAGS_ID invisible: only the name tag draws (and
-            // the outline of a glowing mob, LivingEntityRenderer.getRenderType).
-            // A player keeps its armour, elytra and held items
-            // (`LivingEntityRenderer.submit` skips only the body).
+            // Invisibility hides the body, not equipped armor or held items.
             let is_player = &*mob.kind.id == "minecraft:player";
-            let layers_only = mob.invisible && outline.is_none() && is_player;
+            let gear = &mob.extra;
+            let wearing_armor = [&gear.head, &gear.chest, &gear.legs, &gear.feet]
+                .into_iter()
+                .any(Option::is_some);
+            let layers_only = mob.invisible && outline.is_none() && (is_player || wearing_armor);
             if mob.invisible && outline.is_none() && !layers_only {
                 continue;
             }

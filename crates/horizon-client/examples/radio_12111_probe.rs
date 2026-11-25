@@ -9,6 +9,7 @@ use horizon_protocol::{
     text::Language,
 };
 use std::{
+    collections::HashMap,
     error::Error,
     sync::Arc,
     thread,
@@ -61,6 +62,13 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
     let mut next_tick = Instant::now();
     let mut nether_ready = false;
     let (mut chunks, mut batches, mut keepalives) = (0, 0, 0);
+    let mut armor_targets = HashMap::new();
+    let (zombie_kind, skeleton_kind, iron_helmet) = match session.radio_block_target() {
+        Some(BlockStateTarget::Native12111) => (150, 115, 966),
+        Some(BlockStateTarget::Engine26_3) => (154, 118, 1080),
+        None => return Err("missing Radio registry".into()),
+    };
+    let mut armor_seen = [false; 2];
     while Instant::now() < deadline {
         for event in session.poll() {
             let packet = match event {
@@ -193,12 +201,29 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
                 }
                 C::KeepAlive(_) => keepalives += 1,
                 C::Ping(p) => session.send(S::Pong(p)),
+                C::AddEntity(p) if p.kind == zombie_kind || p.kind == skeleton_kind => {
+                    armor_targets.insert(p.id, usize::from(p.kind == skeleton_kind));
+                }
+                C::SetEquipment(p) if peer.is_some() => {
+                    if let Some(&index) = armor_targets.get(&p.id)
+                        && !armor_seen[index]
+                        && p.slots.iter().any(|(slot, stack)| {
+                            *slot == 5 && stack.as_ref().is_some_and(|stack| stack.item == iron_helmet)
+                        })
+                    {
+                        armor_seen[index] = true;
+                        if armor_seen == [true; 2] {
+                            println!("zombie and skeleton equipment verified");
+                        }
+                    }
+                }
                 _ => {}
             }
         }
         if level.as_ref().is_some_and(|level| level.ready)
             && (!require_nether || nether_ready)
             && (peer.is_none() || (peer_listed && (require_nether || peer_removed)))
+            && (peer.is_none() || armor_seen == [true; 2])
             && keepalives >= 2
         {
             println!(
