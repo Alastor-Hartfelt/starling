@@ -50,9 +50,16 @@ def run_probe(probe, address, server, log):
                                 server_command(server, f'execute at RadioProbe run summon minecraft:{mob} ~ ~ ~ '
                                                '{NoAI:1b,NoGravity:1b,equipment:{head:{id:"minecraft:iron_helmet"}}}')
                             server_command(server, "recipe give @a *")
+                            for attribute, amount in (("movement_speed", 0.0615), ("movement_efficiency", 1)):
+                                server_command(
+                                    server,
+                                    f"execute as @a run attribute @s minecraft:{attribute} "
+                                    f"modifier add minecraft:enchantment.soul_speed {amount} add_value",
+                                )
                             spawned_gear_mobs = True
                         if all("zombie and skeleton equipment verified" in text
-                               and "vanilla recipe displays verified" in text for text in logs):
+                               and "vanilla recipe displays verified" in text
+                               and "Soul Speed attribute modifiers verified" in text for text in logs):
                             server_command(server, "execute in minecraft:the_nether run teleport RadioProbe 0 128 0")
                             crossed = True
                 time.sleep(0.25)

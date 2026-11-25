@@ -431,6 +431,7 @@ impl Wire {
             | canonical::TAKE_ITEM_ENTITY
             | canonical::DAMAGE_EVENT
             | canonical::HURT_ANIMATION
+            | canonical::UPDATE_ATTRIBUTES
             | canonical::ENTITY_EVENT
             | canonical::UPDATE_MOB_EFFECT
             | canonical::REMOVE_MOB_EFFECT

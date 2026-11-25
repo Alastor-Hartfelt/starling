@@ -4670,21 +4670,36 @@ impl Game<'_> {
             // The player's own instances: its maximum health (the hearts the
             // HUD draws and the health it may hold), reach, speed and so on.
             // Then the received health again, which the old maximum clamped.
-            C::UpdateAttributes(p) if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id) => {
-                // Kept for a LocalPlayer made after the packet came, and across respawns.
-                if let Some(r) = self.remote.as_mut() {
+            C::UpdateAttributes(mut p) => {
+                if self.remote.as_ref().is_some_and(|r| r.session.is_radio_12111()) {
+                    let catalog = &self.motion.attributes;
+                    p.values.retain_mut(|snapshot| {
+                        let Some(attribute) = horizon_protocol::radio_12111::attribute_name(
+                            snapshot.attribute,
+                        )
+                        .and_then(|name| catalog.id(name))
+                        else {
+                            return false;
+                        };
+                        snapshot.attribute = attribute.registry_id();
+                        true
+                    });
+                }
+                if let Some(r) = self.remote.as_mut().filter(|r| r.entity_id == p.id) {
+                    // Keep the snapshots for a player created after the packet arrives.
                     for snapshot in &p.values {
                         r.player_attributes
                             .retain(|s| s.attribute != snapshot.attribute);
                         r.player_attributes.push(snapshot.clone());
                     }
+                    if let Some(pl) = self.player.as_mut() {
+                        horizon_client::lan::attributes::apply(&mut pl.attributes, &p.values);
+                    }
+                    self.apply_remote_health();
+                } else {
+                    self.remote_mob_attributes(p.id, &p.values);
                 }
-                if let Some(pl) = self.player.as_mut() {
-                    horizon_client::lan::attributes::apply(&mut pl.attributes, &p.values);
-                }
-                self.apply_remote_health();
             }
-            C::UpdateAttributes(p) => self.remote_mob_attributes(p.id, &p.values),
             C::UpdateMobEffect(p) => self.remote_effect(&p),
             C::RemoveMobEffect(p) => {
                 if self.remote.as_ref().is_some_and(|r| r.entity_id == p.id)

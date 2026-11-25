@@ -70,6 +70,8 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
     };
     let mut armor_seen = [false; 2];
     let mut recipes_seen = false;
+    let mut player_id = None;
+    let mut soul_speed = [false; 2];
     while Instant::now() < deadline {
         for event in session.poll() {
             let packet = match event {
@@ -102,6 +104,7 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
                 .ok_or("received play before configuration")?;
             match packet {
                 C::Login(p) => {
+                    player_id = Some(p.player_id);
                     println!(
                         "entered play as entity {} in {}",
                         p.player_id, p.spawn.dimension
@@ -202,6 +205,25 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
                 }
                 C::KeepAlive(_) => keepalives += 1,
                 C::Ping(p) => session.send(S::Pong(p)),
+                C::UpdateAttributes(p) if Some(p.id) == player_id && soul_speed != [true; 2] => {
+                    for value in p.values {
+                        let Some((index, amount)) = (match horizon_protocol::radio_12111::attribute_name(value.attribute) {
+                            Some("minecraft:movement_speed") => Some((0, 0.0615)),
+                            Some("minecraft:movement_efficiency") => Some((1, 1.0)),
+                            _ => None,
+                        }) else {
+                            continue;
+                        };
+                        soul_speed[index] |= value.modifiers.iter().any(|modifier| {
+                            modifier.id == "minecraft:enchantment.soul_speed"
+                                && modifier.operation == 0
+                                && (modifier.amount - amount).abs() < 1e-6
+                        });
+                    }
+                    if soul_speed == [true; 2] {
+                        println!("Soul Speed attribute modifiers verified");
+                    }
+                }
                 C::RecipeBookAdd(p) if !recipes_seen && p.entries.len() > 20 => {
                     recipes_seen = true;
                     println!("vanilla recipe displays verified ({})", p.entries.len());
@@ -228,7 +250,7 @@ fn run(session: &Session, require_nether: bool, peer: Option<u128>) -> ProbeResu
         if level.as_ref().is_some_and(|level| level.ready)
             && (!require_nether || nether_ready)
             && (peer.is_none() || (peer_listed && (require_nether || peer_removed)))
-            && (peer.is_none() || (armor_seen == [true; 2] && recipes_seen))
+            && (peer.is_none() || (armor_seen == [true; 2] && recipes_seen && soul_speed == [true; 2]))
             && keepalives >= 2
         {
             println!(

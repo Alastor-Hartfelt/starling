@@ -20,6 +20,48 @@ use crate::{
     packets::{handshake, login, play},
 };
 
+/// Names in the 1.21.11 attribute registry's wire order.
+pub fn attribute_name(id: i32) -> Option<&'static str> {
+    const NAMES: &[&str] = &[
+        "minecraft:armor",
+        "minecraft:armor_toughness",
+        "minecraft:attack_damage",
+        "minecraft:attack_knockback",
+        "minecraft:attack_speed",
+        "minecraft:block_break_speed",
+        "minecraft:block_interaction_range",
+        "minecraft:burning_time",
+        "minecraft:camera_distance",
+        "minecraft:explosion_knockback_resistance",
+        "minecraft:entity_interaction_range",
+        "minecraft:fall_damage_multiplier",
+        "minecraft:flying_speed",
+        "minecraft:follow_range",
+        "minecraft:gravity",
+        "minecraft:jump_strength",
+        "minecraft:knockback_resistance",
+        "minecraft:luck",
+        "minecraft:max_absorption",
+        "minecraft:max_health",
+        "minecraft:mining_efficiency",
+        "minecraft:movement_efficiency",
+        "minecraft:movement_speed",
+        "minecraft:oxygen_bonus",
+        "minecraft:safe_fall_distance",
+        "minecraft:scale",
+        "minecraft:sneaking_speed",
+        "minecraft:spawn_reinforcements",
+        "minecraft:step_height",
+        "minecraft:submerged_mining_speed",
+        "minecraft:sweeping_damage_ratio",
+        "minecraft:tempt_range",
+        "minecraft:water_movement_efficiency",
+        "minecraft:waypoint_transmit_range",
+        "minecraft:waypoint_receive_range",
+    ];
+    NAMES.get(usize::try_from(id).ok()?).copied()
+}
+
 /// Construct the initial 1.21.11 handshake packet without changing the
 /// protocol number used by the inherited Horizon connection manager.
 pub fn handshake_packet(host: impl Into<String>, port: u16, intent: i32) -> handshake::Serverbound {
