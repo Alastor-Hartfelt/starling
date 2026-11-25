@@ -349,6 +349,7 @@ impl Wire {
             | canonical::BLOCK_CHANGED_ACK
             | canonical::BLOCK_DESTRUCTION
             | canonical::BLOCK_EVENT
+            | canonical::LEVEL_EVENT
             | canonical::INITIALIZE_BORDER
             | canonical::SET_BORDER_CENTER
             | canonical::SET_BORDER_LERP_SIZE
@@ -390,6 +391,7 @@ impl Wire {
             | canonical::CHANGE_DIFFICULTY
             | canonical::COOLDOWN
             | canonical::SET_PASSENGERS
+            | canonical::SET_ENTITY_LINK
             | canonical::TAKE_ITEM_ENTITY
             | canonical::DAMAGE_EVENT
             | canonical::HURT_ANIMATION
@@ -1721,6 +1723,44 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radio_forwards_lead_attachment_removal_and_block_effects() {
+        use horizon_protocol::buf::{Codec, Pos, Writer};
+
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let decode = |legacy_id, payload: &[u8]| {
+            let id = wire.version().clientbound_id(State::Play, legacy_id).unwrap();
+            wire.decode_play(id, payload).unwrap().unwrap()
+        };
+
+        // The two entity IDs are big-endian ints. Holder 0 detaches the lead.
+        for dest in [300, 0] {
+            let mut body = Writer::new();
+            body.i32(129);
+            body.i32(dest);
+            assert_eq!(
+                decode(0x62, &body.data),
+                play::Clientbound::SetEntityLink(play::SetEntityLink { source: 129, dest })
+            );
+        }
+
+        let pos = [-100, 64, 500];
+        let mut body = Writer::new();
+        body.i32(1505);
+        Pos::write(&pos, &mut body);
+        body.i32(4);
+        body.bool(false);
+        assert_eq!(
+            decode(0x2d, &body.data),
+            play::Clientbound::LevelEvent(play::LevelEvent {
+                kind: 1505,
+                pos,
+                data: 4,
+                global: false,
+            })
+        );
+    }
 
     #[test]
     fn radio_mount_screen_and_border_updates_reach_the_game() {
