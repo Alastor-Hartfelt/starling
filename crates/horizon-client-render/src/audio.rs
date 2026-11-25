@@ -1217,7 +1217,11 @@ impl Audio {
     /// The app went to the background (Android): the output stream stops until
     /// `resume_output`, which plays on where it was.
     pub fn suspend_output(&mut self) {
-        #[cfg(feature = "audio")]
+        // AAudio can invalidate its stream while the app is in the background.
+        // Keep the mixer and its playback positions, and close only the output.
+        #[cfg(all(feature = "audio", target_os = "android"))]
+        drop(self._stream.take());
+        #[cfg(all(feature = "audio", not(target_os = "android")))]
         if let Some(stream) = &self._stream {
             use cpal::traits::StreamTrait;
             if let Err(e) = stream.pause() {
@@ -1226,17 +1230,18 @@ impl Audio {
         }
     }
     pub fn resume_output(&mut self) {
-        #[cfg(feature = "audio")]
+        #[cfg(all(feature = "audio", target_os = "android"))]
+        if self._stream.is_none() && self.backend.live && self.backend.owner == 0 {
+            let device = self.device_name.clone();
+            if let Err(e) = self.set_device(&device) {
+                log::warn!("Horizon: reopening the Android sound output: {e}");
+            }
+        }
+        #[cfg(all(feature = "audio", not(target_os = "android")))]
         if let Some(stream) = &self._stream {
             use cpal::traits::StreamTrait;
             if let Err(e) = stream.play() {
                 log::warn!("Horizon: resuming the sound output: {e}");
-                // Android can invalidate the AAudio stream while the app
-                // is away. Keep the mixer and replace its stale output.
-                #[cfg(target_os = "android")]
-                if let Err(error) = self.set_device(&self.device_name.clone()) {
-                    log::warn!("Horizon: reopening the Android sound output: {error}");
-                }
             }
         }
     }

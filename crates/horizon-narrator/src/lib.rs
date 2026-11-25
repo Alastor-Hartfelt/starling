@@ -218,13 +218,16 @@ fn narrator() -> MutexGuard<'static, GameNarrator> {
 
 /// `new GameNarrator`: opens the platform's speech on its own thread. With
 /// `HORIZON_NO_AUDIO` set the narrator is active but silent, so scripted runs
-/// still narrate into [`recent`]. Calling it again does nothing.
+/// still narrate into [`recent`]. Platforms without a speech backend leave
+/// the narrator inactive. Calling it again does nothing.
 pub fn init() {
+    let silent = std::env::var_os("HORIZON_NO_AUDIO").is_some();
+    if !silent && !cfg!(any(windows, target_os = "macos", target_os = "linux")) {
+        return;
+    }
     let mut narrator = narrator();
     if narrator.sink.is_none() {
-        narrator.sink = Some(Box::new(speech::Thread::spawn(
-            std::env::var_os("HORIZON_NO_AUDIO").is_some(),
-        )));
+        narrator.sink = Some(Box::new(speech::Thread::spawn(silent)));
     }
 }
 
