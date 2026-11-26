@@ -700,14 +700,37 @@ fn read_nested_item_slot(
         return Ok(None);
     }
     let id = reader.varint()?;
-    let item = match target {
-        BlockStateTarget::Engine26_3 => item_registry_id(id, &item_types::ITEMS)?,
-        BlockStateTarget::Native12111 => native_id(id, item_types::ITEMS.len())
-            .ok_or_else(|| crate::Error::new("unknown 1.21.11 item"))?,
-    };
+    let item = decode_item_id(id, target)?;
     let mut stack = Stack::new(item, count);
     let added = reader.count(104)?;
     let removed = reader.count(104)?;
+    stack.added = read_added_components(reader, target, depth, added)?;
+    for _ in 0..removed {
+        let source_kind = reader.varint()?;
+        if source_kind != LEGACY_MAP_COLOR {
+            stack
+                .removed
+                .push(item_registry_id(source_kind, &item_types::COMPONENTS)?);
+        }
+    }
+    Ok(Some(stack))
+}
+
+fn decode_item_id(id: i32, target: BlockStateTarget) -> Result<i32> {
+    match target {
+        BlockStateTarget::Engine26_3 => item_registry_id(id, &item_types::ITEMS),
+        BlockStateTarget::Native12111 => native_id(id, item_types::ITEMS.len())
+            .ok_or_else(|| crate::Error::new("unknown 1.21.11 item")),
+    }
+}
+
+fn read_added_components(
+    reader: &mut Reader,
+    target: BlockStateTarget,
+    depth: usize,
+    added: usize,
+) -> Result<Vec<(i32, Component)>> {
+    let mut components = Vec::with_capacity(added);
     for _ in 0..added {
         let source_kind = reader.varint()?;
         // The engine has no map_color component. Read past its RGB tint
@@ -844,17 +867,43 @@ fn read_nested_item_slot(
                 Err(_) => false,
             });
         }
-        stack.added.push((kind, value));
+        components.push((kind, value));
     }
-    for _ in 0..removed {
-        let source_kind = reader.varint()?;
-        if source_kind != LEGACY_MAP_COLOR {
-            stack
-                .removed
-                .push(item_registry_id(source_kind, &item_types::COMPONENTS)?);
-        }
+    Ok(components)
+}
+
+pub fn decode_merchant_offers(
+    payload: &[u8],
+    target: BlockStateTarget,
+) -> Result<play::MerchantOffers> {
+    let mut r = Reader::new(payload);
+    let container = r.varint()?;
+    let offers = play::Offers::read_with(
+        &mut r,
+        |r| {
+            let item = decode_item_id(r.varint()?, target)?;
+            let count = r.varint()?;
+            let added = r.count(104)?;
+            Ok(play::NetCost {
+                item,
+                count,
+                components: read_added_components(r, target, 0, added)?,
+            })
+        },
+        |r| read_item_slot(r, target),
+    )?;
+    let packet = play::MerchantOffers {
+        container,
+        offers,
+        level: r.varint()?,
+        xp: r.varint()?,
+        show_progress: r.bool()?,
+        can_restock: r.bool()?,
+    };
+    if r.remaining() != 0 {
+        return Err(crate::Error::new("trailing bytes in 1.21.11 merchant offers"));
     }
-    Ok(Some(stack))
+    Ok(packet)
 }
 
 /// Read the server's Brigadier tree using 1.21.11 argument IDs.
@@ -1382,6 +1431,39 @@ mod tests {
             if dim == "minecraft:overworld"));
         assert_eq!(item(3).count, 32);
         assert_eq!(packet.carried.unwrap().count, 2);
+    }
+
+    #[test]
+    fn merchant_offers_decode_both_costs_and_the_result() {
+        let mut w = Writer::new();
+        // Cost A requires a specific map ID. The result carries a stored enchantment.
+        for field in [4, 1, 26, 3, 1, 44, 17, 1, 40, 1, 0, 41, 1, 2, 5] {
+            w.varint(field);
+        }
+        w.bool(true);
+        for field in [1, 2, 0] {
+            w.varint(field);
+        }
+        w.bool(false);
+        for field in [2, 12, 4, -1] {
+            w.i32(field);
+        }
+        w.f32(0.05);
+        w.i32(3);
+        w.varint(2);
+        w.varint(15);
+        w.bool(true);
+        w.bool(false);
+        let p = decode_merchant_offers(&w.data, BlockStateTarget::Engine26_3).unwrap();
+        let offer = &p.offers[0];
+        assert_eq!((p.container, p.level, p.xp), (4, 2, 15));
+        assert_eq!((offer.cost_a.item, offer.cost_a.count), (53, 3));
+        assert_eq!(offer.cost_a.components, [(component::MAP_ID, Component::Int(17))]);
+        assert_eq!(offer.result.component(component::STORED_ENCHANTMENTS),
+            Some(&Component::Enchantments(vec![(2, 5)])));
+        assert_eq!(offer.cost_b.as_ref().unwrap().count, 2);
+        assert_eq!((offer.special_price, offer.demand), (-1, 3));
+        assert!(decode_merchant_offers(&w.data[..w.data.len()-1], BlockStateTarget::Native12111).is_err());
     }
 
     #[test]

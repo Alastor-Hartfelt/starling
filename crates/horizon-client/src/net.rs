@@ -210,6 +210,7 @@ impl Wire {
                 | play::Serverbound::SetCarriedItem(_)
                 | play::Serverbound::PickItemFromBlock(_)
                 | play::Serverbound::PickItemFromEntity(_)
+                | play::Serverbound::SelectTrade(_)
                 | play::Serverbound::SetBeacon(_)
                 | play::Serverbound::PlaceRecipe(_)
                 | play::Serverbound::RecipeBookChangeSettings(_)
@@ -325,6 +326,9 @@ impl Wire {
             | canonical::SET_PLAYER_INVENTORY
             | canonical::SET_CURSOR_ITEM
             | canonical::SET_EQUIPMENT => radio_12111::decode_inventory_for(id, payload, blocks)?,
+            canonical::MERCHANT_OFFERS => play::Clientbound::MerchantOffers(
+                radio_12111::decode_merchant_offers(payload, blocks)?,
+            ),
             canonical::COMMANDS => play::Clientbound::Commands(radio_12111::decode_commands(payload)?),
             canonical::SET_PLAYER_TEAM => {
                 play::Clientbound::SetPlayerTeam(radio_12111::decode_team(payload)?)
@@ -1746,6 +1750,31 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radio_merchant_offers_and_selection_reach_the_wire() {
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Native12111);
+        let id = wire.version().clientbound_id(State::Play, 0x32).unwrap();
+        // Container 4, empty list, villager level 2, 15 XP, shows XP, can restock.
+        assert!(matches!(
+            wire.decode_play(id, &[4, 0, 2, 15, 1, 1]).unwrap(),
+            Some(play::Clientbound::MerchantOffers(p)) if p.container == 4 && p.level == 2
+        ));
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut server = Connection::from_stream(peer).unwrap();
+        let (_, mut writer) = Connection::from_stream(stream).unwrap().split();
+        wire.send_play(
+            &mut writer,
+            play::Serverbound::SelectTrade(play::SelectTrade { item: 2 }),
+            false,
+        )
+        .unwrap();
+        assert_eq!(server.recv().unwrap(), (0x32, vec![2]));
+    }
 
     #[test]
     fn radio_pick_requests_and_bell_sound_use_12111_wire_ids() {

@@ -133,6 +133,34 @@ pub struct NetOffer {
     pub demand: i32,
 }
 pub struct Offers;
+impl Offers {
+    pub(crate) fn read_with(
+        r: &mut Reader,
+        cost: impl Fn(&mut Reader) -> Result<NetCost>,
+        slot: impl Fn(&mut Reader) -> Result<Option<Stack>>,
+    ) -> Result<Vec<NetOffer>> {
+        let n = r.count(r.remaining())?;
+        let mut out = Vec::with_capacity(n.min(64));
+        for _ in 0..n {
+            let cost_a = cost(r)?;
+            let result = slot(r)?.ok_or_else(|| Error::new("empty merchant result"))?;
+            let cost_b = if r.bool()? { Some(cost(r)?) } else { None };
+            out.push(NetOffer {
+                cost_a,
+                result,
+                cost_b,
+                out_of_stock: r.bool()?,
+                uses: r.i32()?,
+                max_uses: r.i32()?,
+                xp: r.i32()?,
+                special_price: r.i32()?,
+                price_multiplier: r.f32()?,
+                demand: r.i32()?,
+            });
+        }
+        Ok(out)
+    }
+}
 impl Codec<Vec<NetOffer>> for Offers {
     fn read(r: &mut Reader) -> Result<Vec<NetOffer>> {
         fn cost(r: &mut Reader) -> Result<NetCost> {
@@ -150,26 +178,7 @@ impl Codec<Vec<NetOffer>> for Offers {
                 components,
             })
         }
-        let n = r.count(r.remaining())?;
-        let mut out = Vec::with_capacity(n.min(64));
-        for _ in 0..n {
-            let cost_a = cost(r)?;
-            let result = Slot::read(r)?.ok_or_else(|| Error::new("empty merchant result"))?;
-            let cost_b = if r.bool()? { Some(cost(r)?) } else { None };
-            out.push(NetOffer {
-                cost_a,
-                result,
-                cost_b,
-                out_of_stock: r.bool()?,
-                uses: r.i32()?,
-                max_uses: r.i32()?,
-                xp: r.i32()?,
-                special_price: r.i32()?,
-                price_multiplier: r.f32()?,
-                demand: r.i32()?,
-            });
-        }
-        Ok(out)
+        Self::read_with(r, cost, Slot::read)
     }
     fn write(v: &Vec<NetOffer>, w: &mut Writer) {
         fn cost(c: &NetCost, w: &mut Writer) {
