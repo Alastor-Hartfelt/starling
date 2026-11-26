@@ -747,6 +747,14 @@ fn read_nested_item_slot(
                     pattern: pattern - 1,
                 }
             }
+            component::USE_REMAINDER => {
+                // Protocol 774 sends a stack, while the engine stores a template.
+                let remainder = read_nested_item_slot(reader, target, depth + 1)?
+                    .ok_or_else(|| crate::Error::new("empty 1.21.11 use remainder"))?;
+                let mut w = Writer::new();
+                Template::write(&remainder, &mut w);
+                Component::Raw(w.data)
+            }
             component::CONTAINER | component::BUNDLE_CONTENTS | component::CHARGED_PROJECTILES => {
                 let count = reader.count(reader.remaining().min(1024))?;
                 let items = (0..count)
@@ -1374,6 +1382,38 @@ mod tests {
             if dim == "minecraft:overworld"));
         assert_eq!(item(3).count, 32);
         assert_eq!(packet.carried.unwrap().count, 2);
+    }
+
+    #[test]
+    fn inventory_snapshot_preserves_a_custom_use_remainder() {
+        let mut w = Writer::new();
+        // Two slots. The first item leaves three items with custom damage.
+        for field in [0, 9, 2, 1, 1, 1, 0, 25, 3, 928, 1, 0, 3, 17] {
+            w.varint(field);
+        }
+        // An ordinary stack follows, then an empty cursor.
+        for field in [32, 1, 0, 0, 0] {
+            w.varint(field);
+        }
+        let play::Clientbound::ContainerSetContent(packet) = decode_inventory_for(
+            ids::play::clientbound::CONTAINER_SET_CONTENT,
+            &w.data,
+            BlockStateTarget::Native12111,
+        )
+        .unwrap() else {
+            panic!("expected inventory snapshot");
+        };
+        let first = packet.items[0].as_ref().unwrap();
+        let Some(Component::Raw(bytes)) = first.component(component::USE_REMAINDER) else {
+            panic!("expected a use remainder");
+        };
+        let mut r = Reader::new(bytes);
+        let remainder = Template::read(&mut r).unwrap();
+        assert_eq!((remainder.item, remainder.count), (928, 3));
+        assert_eq!(remainder.component(component::DAMAGE), Some(&Component::Int(17)));
+        assert_eq!(r.remaining(), 0);
+        assert_eq!(packet.items[1].as_ref().unwrap().count, 32);
+        assert!(packet.carried.is_none());
     }
 
     #[test]
