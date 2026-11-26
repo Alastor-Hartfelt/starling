@@ -768,6 +768,20 @@ fn read_nested_item_slot(
             | component::MAX_DAMAGE
             | component::DAMAGE
             | component::UNBREAKABLE
+            | component::USE_EFFECTS
+            | component::MINIMUM_ATTACK_CHARGE
+            | component::CREATIVE_SLOT_LOCK
+            | component::ATTACK_RANGE
+            | component::POTION_DURATION_SCALE
+            | component::DEBUG_STICK_STATE
+            | component::ENTITY_DATA
+            | component::BUCKET_ENTITY_DATA
+            | component::BLOCK_ENTITY_DATA
+            | component::RECIPES
+            | component::LODESTONE_TRACKER
+            | component::NOTE_BLOCK_SOUND
+            | component::LOCK
+            | component::CONTAINER_LOOT
             | component::CUSTOM_NAME
             | component::ITEM_NAME
             | component::ITEM_MODEL
@@ -1308,6 +1322,58 @@ mod tests {
         ));
         assert_eq!(packet.items[2].as_ref().unwrap().count, 8);
         assert!(packet.carried.is_none());
+    }
+
+    #[test]
+    fn inventory_snapshot_keeps_entity_data_and_slots_after_a_lodestone_compass() {
+        let mut w = Writer::new();
+        w.varint(0); // Player inventory.
+        w.varint(5); // State ID.
+        w.varint(4);
+        // An axolotl bucket and a chest with block entity data.
+        for (item_id, source_kind) in [(1023, 57), (331, 58)] {
+            for field in [1, item_id, 1, 0, source_kind] {
+                w.varint(field);
+            }
+            if source_kind == 58 {
+                w.varint(2); // Block entity type.
+            }
+            w.bytes(&[10, 0]); // Empty unnamed compound.
+        }
+        for field in [1, 1034, 1, 0, 65] {
+            w.varint(field);
+        }
+        w.bool(true);
+        w.string("minecraft:overworld");
+        w.i64(0);
+        w.bool(true);
+        // Last slot and carried stack.
+        for field in [32, 1, 0, 0, 2, 1, 0, 0] {
+            w.varint(field);
+        }
+
+        let play::Clientbound::ContainerSetContent(packet) = decode_inventory_for(
+            ids::play::clientbound::CONTAINER_SET_CONTENT,
+            &w.data,
+            BlockStateTarget::Native12111,
+        )
+        .unwrap() else {
+            panic!("expected inventory snapshot");
+        };
+        let item = |slot: usize| packet.items[slot].as_ref().unwrap();
+        assert_eq!(
+            item(0).component(component::BUCKET_ENTITY_DATA),
+            Some(&Component::Raw(vec![10, 0]))
+        );
+        assert_eq!(
+            item(1).component(component::BLOCK_ENTITY_DATA),
+            Some(&Component::Raw(vec![2, 10, 0]))
+        );
+        assert!(matches!(item(2).component(component::LODESTONE_TRACKER),
+            Some(Component::LodestoneTracker { target: Some((dim, _)), tracked: true })
+            if dim == "minecraft:overworld"));
+        assert_eq!(item(3).count, 32);
+        assert_eq!(packet.carried.unwrap().count, 2);
     }
 
     #[test]
