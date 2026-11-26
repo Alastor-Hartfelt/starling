@@ -57,13 +57,13 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Load the persistent preview signing key
+      - name: Load the persistent preview signing key when configured
         env:
           KEYSTORE: ${{ secrets.STARLING_DEBUG_KEYSTORE_BASE64 }}
         run: |
           if [ -z "$KEYSTORE" ]; then
-            echo "::error::Configure STARLING_DEBUG_KEYSTORE_BASE64 to publish previews that can update in place."
-            exit 1
+            echo "::notice::Building with a temporary signing key. Updating an existing installation requires the same signing key."
+            exit 0
           fi
           umask 077
           mkdir -p target/android
@@ -83,7 +83,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: radio-engine-preview-arm64
-      - name: Build the update-compatible preview APK
+      - name: Build the preview APK
         # Leave room above older previews, which used the fixed version code 13.
         run: |
           python3 packaging/android/build_apk.py --abi arm64-v8a --profile quick --preview \
