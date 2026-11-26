@@ -13,17 +13,28 @@ use horizon_protocol::entity_data::{Particle, ParticleData, Value};
 use horizon_protocol::registry::{Builtin, Dynamic};
 use horizon_world::registry::BlockStateId;
 
+// Protocol 774 has no AgeableMob.AGE_LOCKED entry between baby and these
+// subclasses' data. Keep the newer engine indices for the shared pose code.
+fn pet_index(species: Species, index: u8, radio: bool) -> u8 {
+    if radio && index >= 17 && matches!(species, Species::Fox | Species::Wolf | Species::Cat | Species::Parrot) {
+        index.saturating_add(1)
+    } else {
+        index
+    }
+}
+
 /// The values `apply` takes from one SetEntityData packet, by vanilla's entry
 /// indices (Entity 0..=7, LivingEntity 8..=14, Mob 15, then the subclasses).
 /// `builtin` names the ids of built-in registries.
-fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_entity: i32) {
+fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_entity: i32, radio: bool) {
     let species = m.species();
     let baby = super::lan::baby_index(species);
     if &*m.kind.id == "minecraft:player" {
         player_poses(m, values);
     }
     for (index, _, value) in values {
-        match (*index, value) {
+        let index = pet_index(species, *index, radio);
+        match (index, value) {
             // Entity.DATA_POSE: a player's or mannequin's box follows it.
             (6, Value::Id(pose))
                 if matches!(&*m.kind.id, "minecraft:player" | "minecraft:mannequin") =>
@@ -72,7 +83,7 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             (9, Value::Float(health)) => m.health = *health,
             // LivingEntity.DATA_EFFECT_PARTICLES and DATA_EFFECT_AMBIENCE_ID:
             // the swirls of its effects (`tickEffects` draws them).
-            (10, Value::Particles(list)) => m.extra.effect_particles = swirls(list, builtin),
+            (10, Value::Particles(list)) => m.extra.effect_particles = swirls(list, builtin, radio),
             (11, Value::Bool(ambient)) => m.extra.effect_ambient = *ambient,
             // Mob.DATA_MOB_FLAGS_ID: no AI 1, left-handed 2, aggressive 4.
             // Mob.isAggressive draws the illagers' and skeletons' attack
@@ -98,7 +109,7 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             }
             _ => {}
         }
-        match (species, *index, value) {
+        match (species, index, value) {
             (Species::Guardian | Species::ElderGuardian, 16, Value::Bool(moving)) => {
                 m.extra.flag2 = *moving;
             }
@@ -378,10 +389,11 @@ fn apply_registry_data(
     values: &[(u8, i32, Value)],
     registries: &Dynamic,
     game_time: i64,
+    radio: bool,
 ) {
     let species = m.species();
     for (index, _, value) in values {
-        let registry = match (species, *index, value) {
+        let registry = match (species, pet_index(species, *index, radio), value) {
             (Species::Cat, 20, Value::Id(_)) => "minecraft:cat_variant",
             (Species::Wolf, 23, Value::Id(_)) => "minecraft:wolf_variant",
             (Species::Frog, 18, Value::Id(_)) => "minecraft:frog_variant",
@@ -431,11 +443,15 @@ fn player_poses(m: &mut Mob, values: &[(u8, i32, Value)]) {
 
 /// The options of a synched particle list: an entity effect carries its ARGB
 /// colour, the omens none.
-fn swirls(list: &[Particle], builtin: &Builtin) -> Vec<ParticleOptions> {
+fn swirls(list: &[Particle], builtin: &Builtin, radio: bool) -> Vec<ParticleOptions> {
     let channel = |argb: i32, shift: u32| ((argb >> shift) & 255) as f32 / 255.0;
     list.iter()
         .filter_map(|p| {
-            let name = builtin.get("minecraft:particle_type")?.name(p.id)?;
+            let name = if radio {
+                horizon_protocol::radio_12111::particle_name(p.id)?
+            } else {
+                builtin.get("minecraft:particle_type")?.name(p.id)?
+            };
             let ty = ParticleType::from_name(name)?;
             Some(match p.data {
                 Some(ParticleData::Color(argb)) => ParticleOptions::colored(
@@ -488,8 +504,9 @@ impl Game<'_> {
             _ => None,
         });
         if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
-            apply(m, values, &r.builtin, r.entity_id);
-            apply_registry_data(m, values, &r.registries, self.world.game_time);
+            let radio = r.session.is_radio_12111();
+            apply(m, values, &r.builtin, r.entity_id, radio);
+            apply_registry_data(m, values, &r.registries, self.world.game_time, radio);
             if let Some(code) = bed
                 && m.species() == Species::Villager
             {
@@ -535,7 +552,7 @@ mod tests {
     }
 
     fn apply(m: &mut Mob, values: &[(u8, i32, Value)]) {
-        super::apply(m, values, &builtin(), 99);
+        super::apply(m, values, &builtin(), 99, false);
     }
 
     fn mob(kind: &str) -> Option<Mob> {
@@ -635,6 +652,43 @@ mod tests {
         assert!(calf.is_baby());
         apply(&mut calf, &[(16, s::BOOLEAN, Value::Bool(false))]);
         assert!(!calf.is_baby());
+    }
+
+    #[test]
+    fn radio_fox_and_pets_change_pose_from_server_updates() {
+        use horizon_client::mobs::MobTypes;
+        use horizon_protocol::radio_12111::{BlockStateTarget, decode_entity_data};
+        use std::{fs, sync::Arc};
+
+        let root = std::env::temp_dir().join(format!("radio-pet-poses-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("entity-types.json"),
+            r#"{"minecraft:fox":{},"minecraft:wolf":{},"minecraft:cat":{},"minecraft:parrot":{}}"#).unwrap();
+        fs::write(root.join("entity-models.json"),
+            r#"{"minecraft:fox#main":{},"minecraft:wolf#main":{},"minecraft:cat#main":{},"minecraft:parrot#main":{}}"#).unwrap();
+        let mut types = MobTypes::load(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        let update = |m: &mut Mob, bytes: &[u8]| {
+            let p = decode_entity_data(bytes, BlockStateTarget::Engine26_3).unwrap();
+            super::apply(m, &p.values, &Builtin::default(), 99, true);
+        };
+        for name in ["fox", "cat", "wolf", "parrot"] {
+            let kind = types.types.remove(&format!("minecraft:{name}")).unwrap();
+            let mut m = Mob::new(1, Arc::new(kind), horizon_core::geometry::Vec3::ZERO, 0.0);
+            if name == "fox" {
+                update(&mut m, &[1, 16, 8, 1, 17, 1, 1, 18, 0, 1, 255]);
+                assert!(m.is_baby());
+                assert_eq!(m.extra.variant, 1);
+                assert!(horizon_client::mobs::fox::pose(&m, 0.0).sitting);
+                update(&mut m, &[1, 18, 0, 0, 255]);
+                assert!(!horizon_client::mobs::fox::pose(&m, 0.0).sitting);
+            } else {
+                update(&mut m, &[1, 17, 0, 5, 255]);
+                assert!(m.extra.tame && m.extra.sitting, "{name}");
+                update(&mut m, &[1, 17, 0, 4, 255]);
+                assert!(m.extra.tame && !m.extra.sitting, "{name}");
+            }
+        }
     }
 
     /// #6133: a server's baby happy ghast (a hatched dried ghast) and baby

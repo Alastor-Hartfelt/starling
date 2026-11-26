@@ -1914,6 +1914,20 @@ pub fn drawn_textures(m: &Mob, data: &MobData) -> Vec<String> {
     }
     names
 }
+// Older fox atlases use the adult sprite at both ages.
+fn fox_atlas_texture<'a>(preferred: &'a str, atlas: Atlas<'_>) -> &'a str {
+    if atlas(preferred).is_some() {
+        return preferred;
+    }
+    match preferred {
+        "entity/fox/fox_snow" | "entity/fox/fox_snow_baby" => "entity/fox/snow_fox",
+        "entity/fox/fox_snow_sleep" | "entity/fox/fox_snow_sleep_baby" => "entity/fox/snow_fox_sleep",
+        "entity/fox/fox_baby" => "entity/fox/fox",
+        "entity/fox/fox_sleep_baby" => "entity/fox/fox_sleep",
+        _ => preferred,
+    }
+}
+
 /// The texture a model drawn as `custom` takes: the `.jem`'s when the atlas has it, else
 /// `vanilla` (a texture the atlas lacks would hide the model).
 fn cem_texture<'a>(
@@ -1970,7 +1984,12 @@ fn render_visible(
             .cloned()
             .unwrap_or_else(|| m.kind.model.clone()),
     };
-    let texture = cem_texture(custom_body, &texture, atlas);
+    let vanilla = if m.species() == Species::Fox {
+        fox_atlas_texture(&texture, atlas)
+    } else {
+        &texture
+    };
+    let texture = cem_texture(custom_body, vanilla, atlas);
     // OptiFine random textures and ETF blinking: the sprite a texture draws with instead, when
     // the atlas has it: the variant the mob wears, then its blink frame while it blinks (or
     // sleeps). The texture keeps its name for everything else.
@@ -2851,6 +2870,19 @@ mod tests {
         assert_eq!(snap_to_face(0.75), 1.0);
         assert_eq!(snap_to_face(0.5), 0.5);
         assert_eq!(snap_to_face(0.1), 0.5);
+    }
+
+    #[test]
+    fn fox_textures_follow_the_available_atlas() {
+        let old = |name: &str| matches!(name, "entity/fox/snow_fox" | "entity/fox/snow_fox_sleep")
+            .then_some([0.0; 4]);
+        for key in ["entity/fox/fox_snow", "entity/fox/fox_snow_baby"] {
+            assert_eq!(fox_atlas_texture(key, &old), "entity/fox/snow_fox");
+        }
+        assert_eq!(fox_atlas_texture("entity/fox/fox_snow_sleep_baby", &old),
+            "entity/fox/snow_fox_sleep");
+        let new = |_: &str| Some([0.0; 4]);
+        assert_eq!(fox_atlas_texture("entity/fox/fox_snow_baby", &new), "entity/fox/fox_snow_baby");
     }
 
     #[test]

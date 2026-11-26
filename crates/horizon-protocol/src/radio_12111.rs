@@ -34,7 +34,7 @@ pub fn particle_name(id: i32) -> Option<&'static str> {
     PARTICLE_TYPES.lines().nth(usize::try_from(id).ok()?)
 }
 
-fn explosion_particle(r: &mut Reader, target: BlockStateTarget) -> Result<Particle> {
+fn read_particle(r: &mut Reader, target: BlockStateTarget) -> Result<Particle> {
     let id = r.varint()?;
     let name = particle_name(id).ok_or_else(|| crate::Error::new("unknown 1.21.11 particle"))?;
     // Reuse the shared codecs where the payload is unchanged. Return the
@@ -71,12 +71,12 @@ pub fn decode_explosion(payload: &[u8], target: BlockStateTarget) -> Result<play
     let radius = r.f32()?;
     let block_count = r.i32()?;
     let knockback = Opt::<Vec3d>::read(&mut r)?;
-    let particle = explosion_particle(&mut r, target)?;
+    let particle = read_particle(&mut r, target)?;
     let sound = play::SoundHolder::read(&mut r)?;
     let count = r.count(r.remaining() / 10)?;
     let block_particles = (0..count)
         .map(|_| Ok(play::ExplosionParticle {
-            particle: explosion_particle(&mut r, target)?,
+            particle: read_particle(&mut r, target)?,
             scaling: r.f32()?,
             speed: r.f32()?,
             weight: r.varint()?,
@@ -981,14 +981,22 @@ pub fn decode_entity_data(payload: &[u8], target: BlockStateTarget) -> Result<pl
                 Err(_) => break,
             },
             serializer::PARTICLES => {
-                // An empty list clears potion particles and has no
-                // version-specific particle IDs or payloads to translate.
-                if r.varint()? != 0 {
-                    break;
-                }
-                Value::Particles(Vec::new())
+                let count = r.count(r.remaining())?;
+                let particles = (0..count).map(|_| read_particle(&mut r, target))
+                    .collect::<Result<Vec<_>>>();
+                let Ok(particles) = particles else { break };
+                Value::Particles(particles)
             }
-            serializer::BYTE..=serializer::DIRECTION
+            // The 774 registry lacks the newer cat and cow sound serializers.
+            21..=24 => {
+                let canonical = [
+                    serializer::CAT_VARIANT, serializer::COW_VARIANT,
+                    serializer::WOLF_VARIANT, serializer::WOLF_SOUND_VARIANT,
+                ][(kind - 21) as usize];
+                values.push((index, canonical, Value::Id(r.varint()?)));
+                continue;
+            }
+            serializer::BYTE..=serializer::OPTIONAL_LIVING_ENTITY_REFERENCE
             | serializer::OPTIONAL_UNSIGNED_INT
             | serializer::POSE => {
                 let Some(value) = entity_data::read_value(kind, &mut r)? else {
@@ -1572,6 +1580,23 @@ mod tests {
         assert_eq!(parameters.suffix, Tag::String(" Suffix".into()));
         assert_eq!(parameters.color, Some(10));
         assert_eq!(parameters.options, 3);
+    }
+
+    #[test]
+    fn pet_metadata_survives_effect_particles_and_an_owner_reference() {
+        let mut w = Writer::new();
+        w.varint(7);
+        w.bytes(&[10, 17, 1, 21]); // One entity_effect particle.
+        w.i32(0x12345678);
+        w.bytes(&[17, 0, 5, 18, 13, 1]);
+        w.uuid(123);
+        w.bytes(&[22, 23, 2, 23, 24, 0, 255]);
+        let p = decode_entity_data(&w.data, BlockStateTarget::Native12111).unwrap();
+        assert_eq!(p.values.len(), 5);
+        assert_eq!(p.values[1], (17, serializer::BYTE, Value::Byte(5)));
+        assert_eq!(p.values[2].2, Value::OptUuid(Some(123)));
+        assert_eq!(p.values[3], (22, serializer::WOLF_VARIANT, Value::Id(2)));
+        assert_eq!(p.values[4].1, serializer::WOLF_SOUND_VARIANT);
     }
 
     #[test]
