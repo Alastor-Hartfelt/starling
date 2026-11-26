@@ -210,6 +210,7 @@ impl Wire {
                 | play::Serverbound::SetCarriedItem(_)
                 | play::Serverbound::PickItemFromBlock(_)
                 | play::Serverbound::PickItemFromEntity(_)
+                | play::Serverbound::RenameItem(_)
                 | play::Serverbound::SelectTrade(_)
                 | play::Serverbound::SetBeacon(_)
                 | play::Serverbound::PlaceRecipe(_)
@@ -1750,6 +1751,27 @@ fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radio_anvil_sends_new_names_and_clears_them() {
+        let wire = Wire::Radio12111(radio_12111::BlockStateTarget::Engine26_3);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut server = Connection::from_stream(peer).unwrap();
+        let (_, mut writer) = Connection::from_stream(stream).unwrap().split();
+
+        for (name, payload) in [("Snow ❄", &b"\x08Snow \xe2\x9d\x84"[..]), ("", &[0][..])] {
+            wire.send_play(
+                &mut writer,
+                play::Serverbound::RenameItem(play::RenameItem { name: name.into() }),
+                false,
+            )
+            .unwrap();
+            assert_eq!(server.recv().unwrap(), (0x2f, payload.to_vec()));
+        }
+    }
 
     #[test]
     fn radio_merchant_offers_and_selection_reach_the_wire() {
