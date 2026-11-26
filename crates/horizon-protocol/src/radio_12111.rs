@@ -997,6 +997,7 @@ pub fn decode_entity_data(payload: &[u8], target: BlockStateTarget) -> Result<pl
                 continue;
             }
             serializer::BYTE..=serializer::OPTIONAL_LIVING_ENTITY_REFERENCE
+            | serializer::VILLAGER_DATA
             | serializer::OPTIONAL_UNSIGNED_INT
             | serializer::POSE => {
                 let Some(value) = entity_data::read_value(kind, &mut r)? else {

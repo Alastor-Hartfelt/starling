@@ -15,8 +15,11 @@ use horizon_world::registry::BlockStateId;
 
 // Protocol 774 has no AgeableMob.AGE_LOCKED entry between baby and these
 // subclasses' data. Keep the newer engine indices for the shared pose code.
-fn pet_index(species: Species, index: u8, radio: bool) -> u8 {
-    if radio && index >= 17 && matches!(species, Species::Fox | Species::Wolf | Species::Cat | Species::Parrot) {
+fn mob_data_index(species: Species, index: u8, radio: bool) -> u8 {
+    if radio && index >= 17 && matches!(
+        species,
+        Species::Fox | Species::Wolf | Species::Cat | Species::Parrot | Species::Horse | Species::Villager
+    ) {
         index.saturating_add(1)
     } else {
         index
@@ -33,7 +36,7 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
         player_poses(m, values);
     }
     for (index, _, value) in values {
-        let index = pet_index(species, *index, radio);
+        let index = mob_data_index(species, *index, radio);
         match (index, value) {
             // Entity.DATA_POSE: a player's or mannequin's box follows it.
             (6, Value::Id(pose))
@@ -393,7 +396,7 @@ fn apply_registry_data(
 ) {
     let species = m.species();
     for (index, _, value) in values {
-        let registry = match (species, pet_index(species, *index, radio), value) {
+        let registry = match (species, mob_data_index(species, *index, radio), value) {
             (Species::Cat, 20, Value::Id(_)) => "minecraft:cat_variant",
             (Species::Wolf, 23, Value::Id(_)) => "minecraft:wolf_variant",
             (Species::Wolf, 24, Value::Id(id)) => {
@@ -697,6 +700,95 @@ mod tests {
                 assert!(m.extra.tame && m.extra.sitting, "{name}");
                 update(&mut m, &[1, 17, 0, 4, 255]);
                 assert!(m.extra.tame && !m.extra.sitting, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn radio_horse_and_villager_appearance_reaches_the_renderer() {
+        use horizon_client::mobs::{MobTypes, render};
+        use horizon_protocol::buf::Writer;
+        use horizon_protocol::radio_12111::{BlockStateTarget, decode_entity_data};
+        use horizon_protocol::registry::Ids;
+        use std::{fs, sync::Arc};
+
+        let root = std::env::temp_dir().join(format!("radio-mob-appearance-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("entity-types.json"),
+            r#"{"minecraft:horse":{},"minecraft:villager":{},"minecraft:zombie_villager":{}}"#,
+        )
+        .unwrap();
+        fs::write(root.join("entity-models.json"),
+                r#"{"minecraft:horse#main":{},"minecraft:villager#main":{},"minecraft:zombie_villager#main":{}}"#).unwrap();
+        let mut types = MobTypes::load(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        let mut spawn = |name: &str| {
+            Mob::new(
+                1,
+                Arc::new(types.types.remove(name).unwrap()),
+                horizon_core::geometry::Vec3::ZERO,
+                0.0,
+            )
+        };
+        let mut builtin = Builtin::default();
+        builtin.registries.insert(
+            "minecraft:villager_type".into(),
+            Ids::from_names(vec!["minecraft:desert".into()]),
+        );
+        builtin.registries.insert(
+            "minecraft:villager_profession".into(),
+            Ids::from_names(vec![
+                "minecraft:farmer".into(),
+                "minecraft:librarian".into(),
+            ]),
+        );
+        let update = |m: &mut Mob, bytes: &[u8]| {
+            let p = decode_entity_data(bytes, BlockStateTarget::Engine26_3).unwrap();
+            super::apply(m, &p.values, &builtin, 99, true);
+        };
+
+        let mut horse = spawn("minecraft:horse");
+        for (color, name) in [
+            "white",
+            "creamy",
+            "chestnut",
+            "brown",
+            "black",
+            "gray",
+            "darkbrown",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut w = Writer::new();
+            w.bytes(&[1, 18, 1]);
+            w.varint(color as i32 | (3 << 8));
+            w.u8(255);
+            update(&mut horse, &w.data);
+            assert_eq!(render::body(&horse).1, format!("entity/horse/horse_{name}"));
+            assert!(
+                render::layers(&horse, 0.0)
+                    .iter()
+                    .any(|l| l.texture == "entity/horse/horse_markings_whitedots")
+            );
+        }
+        for (name, index) in [("villager", 18), ("zombie_villager", 20)] {
+            let mut m = spawn(&format!("minecraft:{name}"));
+            for (job, profession) in [(0, "farmer"), (1, "librarian")] {
+                update(&mut m, &[1, index, 18, 0, job, 4, 255]);
+                let layers = render::layers(&m, 0.0);
+                for suffix in [
+                    "type/desert".to_owned(),
+                    format!("profession/{profession}"),
+                    "profession_level/emerald".into(),
+                ] {
+                    assert!(
+                        layers
+                            .iter()
+                            .any(|l| l.texture == format!("entity/{name}/{suffix}"))
+                    );
+                }
             }
         }
     }
