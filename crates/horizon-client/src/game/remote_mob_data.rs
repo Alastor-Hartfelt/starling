@@ -396,6 +396,16 @@ fn apply_registry_data(
         let registry = match (species, pet_index(species, *index, radio), value) {
             (Species::Cat, 20, Value::Id(_)) => "minecraft:cat_variant",
             (Species::Wolf, 23, Value::Id(_)) => "minecraft:wolf_variant",
+            (Species::Wolf, 24, Value::Id(id)) => {
+                // Registry order is chosen by the server. Resolve the voice
+                // independently of the wolf's coat.
+                m.extra.sound_variant = registries.name("minecraft:wolf_sound_variant", *id)
+                    .and_then(|name| name.strip_prefix("minecraft:"))
+                    .and_then(|name| finalize::sound_variants(species).iter()
+                        .position(|variant| *variant == name))
+                    .map(|index| index as u8);
+                continue;
+            }
             (Species::Frog, 18, Value::Id(_)) => "minecraft:frog_variant",
             (Species::Pig, 19, Value::Id(_)) => "minecraft:pig_variant",
             (Species::Cow, 18, Value::Id(_)) => "minecraft:cow_variant",
@@ -688,6 +698,33 @@ mod tests {
                 update(&mut m, &[1, 17, 0, 4, 255]);
                 assert!(m.extra.tame && !m.extra.sitting, "{name}");
             }
+        }
+    }
+
+    #[test]
+    fn radio_wolf_voice_follows_the_servers_registry() {
+        use horizon_client::mobs::MobTypes;
+        use horizon_protocol::radio_12111::{BlockStateTarget, decode_entity_data};
+        use std::{fs, sync::Arc};
+
+        let root = std::env::temp_dir().join(format!("radio-wolf-voice-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("entity-types.json"), r#"{"minecraft:wolf":{}}"#).unwrap();
+        fs::write(root.join("entity-models.json"), r#"{"minecraft:wolf#main":{}}"#).unwrap();
+        let mut types = MobTypes::load(&root).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        let kind = types.types.remove("minecraft:wolf").unwrap();
+        let mut wolf = Mob::new(1, Arc::new(kind), horizon_core::geometry::Vec3::ZERO, 0.0);
+        wolf.extra.variant = 4;
+        let mut registries = Dynamic::default();
+        registries.registries.insert("minecraft:wolf_sound_variant".into(), vec![
+            ("minecraft:sad".into(), None), ("minecraft:classic".into(), None),
+        ]);
+        for (id, bark) in [(0, "entity.wolf_sad.ambient"), (1, "entity.wolf.ambient")] {
+            let p = decode_entity_data(&[1, 23, 24, id, 255], BlockStateTarget::Engine26_3).unwrap();
+            apply_registry_data(&mut wolf, &p.values, &registries, 0, true);
+            assert_eq!(finalize::variant_sound(&wolf, "ambient"), Some(bark));
+            assert_eq!(wolf.extra.variant, 4);
         }
     }
 
